@@ -4,6 +4,29 @@
 #ifndef PROXY_TEST_SCRIPT_H_
 #define PROXY_TEST_SCRIPT_H_
 
+#define B_132073833_JS \
+  "function FindProxyForURL(url, host){\n" \
+  "    function opt() {\n" \
+  "        opt['x'] = 1.1;\n" \
+  "        try {\n" \
+  "            Object.create(object);\n" \
+  "        } catch (e) {\n" \
+  "        }\n" \
+  "\n" \
+  "        for (let i = 0; i < 100000; i++) {\n" \
+  "\n" \
+  "        }\n" \
+  "    }\n" \
+  "\n" \
+  "    opt();\n" \
+  "    object = opt;\n" \
+  "    opt();\n" \
+  "\n" \
+  "    return \"DIRECT\";\n" \
+  "}\n" \
+  "\n" \
+  "var object;\n" \
+
 #define BINDING_FROM_GLOBAL_JS \
   "// Calls a bindings outside of FindProxyForURL(). This causes the code to\n" \
   "// get exercised during initialization.\n" \
@@ -80,7 +103,7 @@
 
 #define CHANGE_ELEMENT_KIND_JS \
   "// PAC script with getter that changes element kind.\n" \
-  "	\n" \
+  "\n" \
   "function FindProxyForURL(url, host) {\n" \
   "  let arr = [];\n" \
   "  arr[1000] = 0x1234;\n" \
@@ -91,7 +114,7 @@
   "  });\n" \
   "\n" \
   "  let results = Object.entries(arr);\n" \
-  "  let str = results.toString(); \n" \
+  "  let str = results.toString();\n" \
   "  return \"DIRECT\";\n" \
   "}\n" \
 
