@@ -1,0 +1,12 @@
+This repository contains ARM DS-5 Streamline's components for profiling. Build produces two artifacts, gatord and gator.ko and they are only included in debug variants.
+
+Update procedure
+----------------
+Delete gator-daemon and gator-driver directories.
+Unpack new ones from DS-5 delivery into repository.
+Bring back gator-driver/Kbuild file (it should be same as Makefile).
+Bring back gator-driver/Android.mk
+Make sure gator-daemon/Android.mk's LOCAL_MODULE_TAGS is set to debug.
+Build both driver and daemon with mm command to verify it builds.
+Deliver.
+Pray you didn't brake any other product build since all gator gits are pointing to master, except frozen ones (it should be ok).
