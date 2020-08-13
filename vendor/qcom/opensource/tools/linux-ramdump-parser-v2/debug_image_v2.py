@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+# Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -501,6 +501,7 @@ class DebugImage_v2():
                    [qtf_path, '-c', '{:d}'.format(port),'new workspace {0} {1} {2}'.format(qtf_dir, chipset, hlos)], shell=True,stderr=subprocess.PIPE,stdout=subprocess.PIPE)
         server_proc1.communicate()
         self.collect_ftrace_format(ram_dump)
+        server_proc1.kill()
 
         p = subprocess.Popen('{0} -c {1} open workspace {2}'.format(qtf_path, port, workspace))
         self.wait_for_completion_timeout(p,60)
@@ -512,7 +513,23 @@ class DebugImage_v2():
         self.wait_for_completion_timeout(p,60)
         p = subprocess.Popen('{0} -c {1} exit'.format(qtf_path, port))
         self.wait_for_completion_timeout(p,60)
-        server_proc.terminate()
+        try:
+            import psutil
+            pid = server_proc.pid
+            pid = int(pid)
+            parent = psutil.Process(pid)
+            for child in parent.children(recursive=True):				# or parent.children() for recursive=False
+                print_out_str("child process = {0} which needs to be killed forcefully after QTF timeout".format(child))
+                if (psutil.pid_exists(child.pid)):
+                    try:
+                        child.kill()
+                    except Exception as e:
+                        print_out_str("Error: {0} while killing the child of QTF process".format(e))
+                        pass
+            server_proc.kill()
+        except Exception as e1:
+            print_out_str("psutil module import error = {0}".format(e1))
+            pass
 
     def parse_dcc(self, ram_dump):
         out_dir = ram_dump.outdir

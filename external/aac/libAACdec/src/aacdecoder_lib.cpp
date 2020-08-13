@@ -1,7 +1,7 @@
 /* -----------------------------------------------------------------------------
 Software License for The Fraunhofer FDK AAC Codec Library for Android
 
-© Copyright  1995 - 2018 Fraunhofer-Gesellschaft zur Förderung der angewandten
+© Copyright  1995 - 2019 Fraunhofer-Gesellschaft zur Förderung der angewandten
 Forschung e.V. All rights reserved.
 
  1.    INTRODUCTION
@@ -119,8 +119,8 @@ amm-info@iis.fraunhofer.de
 
 /* Decoder library info */
 #define AACDECODER_LIB_VL0 3
-#define AACDECODER_LIB_VL1 0
-#define AACDECODER_LIB_VL2 0
+#define AACDECODER_LIB_VL1 1
+#define AACDECODER_LIB_VL2 2
 #define AACDECODER_LIB_TITLE "AAC Decoder Lib"
 #ifdef __ANDROID__
 #define AACDECODER_LIB_BUILD_DATE ""
@@ -387,7 +387,7 @@ static INT aacDecoder_SbrCallback(
 
 static INT aacDecoder_SscCallback(void *handle, HANDLE_FDK_BITSTREAM hBs,
                                   const AUDIO_OBJECT_TYPE coreCodec,
-                                  const INT samplingRate,
+                                  const INT samplingRate, const INT frameSize,
                                   const INT stereoConfigIndex,
                                   const INT coreSbrFrameLengthIndex,
                                   const INT configBytes, const UCHAR configMode,
@@ -398,8 +398,8 @@ static INT aacDecoder_SscCallback(void *handle, HANDLE_FDK_BITSTREAM hBs,
 
   err = mpegSurroundDecoder_Config(
       (CMpegSurroundDecoder *)hAacDecoder->pMpegSurroundDecoder, hBs, coreCodec,
-      samplingRate, stereoConfigIndex, coreSbrFrameLengthIndex, configBytes,
-      configMode, configChanged);
+      samplingRate, frameSize, stereoConfigIndex, coreSbrFrameLengthIndex,
+      configBytes, configMode, configChanged);
 
   switch (err) {
     case MPS_UNSUPPORTED_CONFIG:
@@ -634,6 +634,7 @@ static AAC_DECODER_ERROR setConcealMethod(
     switch (err) {
       case PCMDMX_INVALID_HANDLE:
         errorStatus = AAC_DEC_INVALID_HANDLE;
+        break;
       case PCMDMX_OK:
         break;
       default:
@@ -822,11 +823,15 @@ LINKSPEC_CPP AAC_DECODER_ERROR aacDecoder_SetParam(
     case AAC_DRC_ATTENUATION_FACTOR:
       /* DRC compression factor (where 0 is no and 127 is max compression) */
       errorStatus = aacDecoder_drcSetParam(hDrcInfo, DRC_CUT_SCALE, value);
+      uniDrcErr = FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_COMPRESS,
+                                      value * (FL2FXCONST_DBL(0.5f / 127.0f)));
       break;
 
     case AAC_DRC_BOOST_FACTOR:
       /* DRC boost factor (where 0 is no and 127 is max boost) */
       errorStatus = aacDecoder_drcSetParam(hDrcInfo, DRC_BOOST_SCALE, value);
+      uniDrcErr = FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_BOOST,
+                                      value * (FL2FXCONST_DBL(0.5f / 127.0f)));
       break;
 
     case AAC_DRC_REFERENCE_LEVEL:
@@ -870,6 +875,11 @@ LINKSPEC_CPP AAC_DECODER_ERROR aacDecoder_SetParam(
       uniDrcErr = FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_EFFECT_TYPE,
                                       (FIXP_DBL)value);
       break;
+    case AAC_UNIDRC_ALBUM_MODE:
+      uniDrcErr = FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_ALBUM_MODE,
+                                      (FIXP_DBL)value);
+      break;
+
     case AAC_TPDEC_CLEAR_BUFFER:
       errTp = transportDec_SetParam(hTpDec, TPDEC_PARAM_RESET, 1);
       self->streamInfo.numLostAccessUnits = 0;
@@ -1397,9 +1407,13 @@ aacDecoder_DecodeFrame(HANDLE_AACDECODER self, INT_PCM *pTimeData_extern,
         mpegSurroundDecoder_ConfigureQmfDomain(
             (CMpegSurroundDecoder *)self->pMpegSurroundDecoder, sac_interface,
             (UINT)self->streamInfo.aacSampleRate, self->streamInfo.aot);
-        self->qmfDomain.globalConf.nQmfTimeSlots_requested =
-            self->streamInfo.aacSamplesPerFrame /
-            self->qmfDomain.globalConf.nBandsAnalysis_requested;
+        if (self->qmfDomain.globalConf.nBandsAnalysis_requested > 0) {
+          self->qmfDomain.globalConf.nQmfTimeSlots_requested =
+              self->streamInfo.aacSamplesPerFrame /
+              self->qmfDomain.globalConf.nBandsAnalysis_requested;
+        } else {
+          self->qmfDomain.globalConf.nQmfTimeSlots_requested = 0;
+        }
       }
 
       self->qmfDomain.globalConf.TDinput = pTimeData;
@@ -1661,6 +1675,13 @@ aacDecoder_DecodeFrame(HANDLE_AACDECODER self, INT_PCM *pTimeData_extern,
             reverseInChannelMap[ch] = ch;
             reverseOutChannelMap[ch] = ch;
           }
+
+          /* Update sampleRate and frameSize. This may be necessary in case of
+           * implicit SBR signaling */
+          FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_SAMPLE_RATE,
+                              self->streamInfo.sampleRate);
+          FDK_drcDec_SetParam(self->hUniDrcDecoder, DRC_DEC_FRAME_SIZE,
+                              self->streamInfo.frameSize);
 
           /* If SBR and/or MPS is active, the DRC gains are aligned to the QMF
              domain signal before the QMF synthesis. Therefore the DRC gains

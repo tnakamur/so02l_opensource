@@ -274,7 +274,7 @@ TRANSPORTDEC_ERROR transportDec_OutOfBandConfig(HANDLE_TRANSPORTDEC hTp,
   UCHAR configChanged = 0;
   UCHAR configMode = AC_CM_DET_CFG_CHANGE;
 
-  UCHAR tmpConf[1024];
+  UCHAR tmpConf[1024] = {0};
   if (length > 1024) {
     return TRANSPORTDEC_UNSUPPORTED_FORMAT;
   }
@@ -956,6 +956,7 @@ static TRANSPORTDEC_ERROR transportDec_readHeader(
         hTp->parser.latm.m_audioMuxLengthBytes = syncLayerFrameBits;
         syncLayerFrameBits <<= 3;
       }
+      FDK_FALLTHROUGH;
     case TT_MP4_LATM_MCP1:
     case TT_MP4_LATM_MCP0:
       if (hTp->numberOfRawDataBlocks <= 0) {

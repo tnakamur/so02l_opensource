@@ -1,4 +1,4 @@
-# Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+# Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -427,6 +427,7 @@ class Board8917(Board):
         self.smem_addr = 0x6300000
         self.phys_offset = 0x40000000
         self.imem_start = 0x8600000
+        self.kaslr_addr = 0x86006d0
         self.wdog_addr = 0x8600658
         self.imem_file_name = 'OCIMEM.BIN'
 
@@ -501,6 +502,21 @@ class BoardSDM710(Board):
         self.wdog_addr = 0x146BF658
         self.imem_file_name = 'OCIMEM.BIN'
 
+class BoardTrinket(Board):
+    def __init__(self, socid):
+        super(BoardTrinket, self).__init__()
+        self.socid = socid
+        self.board_num = "trinket"
+        self.cpu = 'CORTEXA53'
+        self.ram_start = 0x40000000
+        self.smem_addr = 0x6000000
+        self.smem_addr_buildinfo = 0x6007210
+        self.phys_offset = 0x40000000
+        self.imem_start = 0x0c100000
+        self.kaslr_addr = 0x0c1256d0
+        self.wdog_addr = 0x0c125658
+        self.imem_file_name = 'OCIMEM.BIN'
+
 class BoardQCS605(Board):
     def __init__(self, socid):
         super(BoardQCS605, self).__init__()
@@ -525,6 +541,7 @@ class BoardQCS405(Board):
         self.smem_addr = 0x6300000
         self.phys_offset = 0x40000000
         self.imem_start = 0x8600000
+        self.kaslr_addr = 0x86006d0
         self.wdog_addr = 0x8600658
         self.imem_file_name = 'OCIMEM.BIN'
 
@@ -627,6 +644,21 @@ class BoardSteppe(Board):
         self.wdog_addr = 0x146aa658
         self.imem_file_name = 'OCIMEM.BIN'
 
+class BoardLito(Board):
+    def __init__(self, socid):
+        super(BoardLito, self).__init__()
+        self.socid = socid
+        self.board_num = "lito"
+        self.cpu = 'CORTEXA53'
+        self.ram_start = 0x80000000
+        self.smem_addr = 0x900000
+        self.smem_addr_buildinfo = 0x907210
+        self.phys_offset = 0xA2400000
+        self.imem_start = 0x14680000
+        self.kaslr_addr = 0x146ab6d0
+        self.wdog_addr = 0x146ab658
+        self.imem_file_name = 'OCIMEM.BIN'
+
 class BoardPoorwills(Board):
     def __init__(self, socid):
         super(BoardPoorwills, self).__init__()
@@ -638,6 +670,34 @@ class BoardPoorwills(Board):
         self.phys_offset = 0x80000000
         self.imem_start = 0x14680000
         self.wdog_addr =  0x14680658
+        self.imem_file_name = 'OCIMEM.BIN'
+
+class BoardPrairie(Board):
+    def __init__(self, socid):
+        super(BoardPrairie, self).__init__()
+        self.socid = socid
+        self.board_num = "sdxprairie"
+        self.cpu = 'CORTEXA7'
+        self.ram_start = 0x80000000
+        self.smem_addr = 0xFE40000
+        self.phys_offset = 0x80000000
+        self.imem_start = 0x14680000
+        self.wdog_addr =  0x14680658
+        self.imem_file_name = 'OCIMEM.BIN'
+
+class BoardKona(Board):
+    def __init__(self, socid):
+        super(BoardKona, self).__init__()
+        self.socid = socid
+        self.board_num = "kona"
+        self.cpu = 'CORTEXA53'
+        self.ram_start = 0x80000000
+        self.smem_addr = 0x900000
+        self.smem_addr_buildinfo = 0x907210
+        self.phys_offset = 0xA0000000
+        self.imem_start = 0x14680000
+        self.kaslr_addr = 0x146bf6d0
+        self.wdog_addr = 0x146BF658
         self.imem_file_name = 'OCIMEM.BIN'
 
 boards = []
@@ -838,6 +898,7 @@ boards.append(Board8917(socid=303))
 boards.append(Board8917(socid=307))
 boards.append(Board8917(socid=308))
 boards.append(Board8917(socid=309))
+boards.append(Board8917(socid=386))
 
 boards.append(Board8920(socid=320))
 
@@ -860,6 +921,10 @@ boards.append(BoardSDX20(socid=333))
 
 boards.append(BoardSteppe(socid=355))
 boards.append(BoardSteppe(socid=369))
+boards.append(BoardSteppe(socid=365))
+boards.append(BoardSteppe(socid=366))
+
+boards.append(BoardLito(socid=400))
 
 boards.append(BoardSDM710(socid=336))
 boards.append(BoardSDM710(socid=337))
@@ -869,14 +934,21 @@ boards.append(BoardQCS605(socid=347))
 boards.append(BoardQCS405(socid=352))
 boards.append(BoardQCS403(socid=373))
 
+boards.append(BoardTrinket(socid=394))
+
 boards.append(BoardPoorwills(socid=334))
 boards.append(BoardPoorwills(socid=335))
+
+boards.append(BoardPrairie(socid=357))
+boards.append(BoardPrairie(socid=368))
 
 boards.append(Board439(socid=353))
 boards.append(Board439(socid=363))
 
 boards.append(Board429(socid=354))
 boards.append(Board429(socid=364))
+
+boards.append(BoardKona(socid=356))
 
 def get_supported_boards():
     """ Called by other part of the code to get a list of boards """

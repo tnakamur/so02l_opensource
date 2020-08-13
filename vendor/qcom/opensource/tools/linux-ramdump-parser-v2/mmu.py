@@ -37,10 +37,14 @@ class MMU(object):
 
     """
 
-    def __init__(self, ramdump):
+    def __init__(self, ramdump, ttbr=None):
         self._tlb = {}
         self.ramdump = ramdump
-        self.ttbr = None
+        if ttbr is not None:
+            self.ttbr = ttbr
+        else:
+            self.ttbr = self.ramdump.kernel_virt_to_phys(
+                    self.ramdump.swapper_pg_dir_addr)
         self.load_page_tables()
 
     def virt_to_phys(self, addr, skip_tlb=False, save_in_tlb=True):
@@ -86,13 +90,10 @@ class Armv7MMU(MMU):
         self.secondary_page_tables = [
             [0 for col in range(256)] for row in range(4096)]
 
-        msm_ttbr0 = self.ramdump.kernel_virt_to_phys(
-            self.ramdump.swapper_pg_dir_addr)
-        self.ttbr = msm_ttbr0
         virt_address = 0x0
         gb_i = 0
         se_i = 0
-        for l1_pte_ptr in range(msm_ttbr0, msm_ttbr0 + (4096 * 4), 4):
+        for l1_pte_ptr in range(self.ttbr, self.ttbr + (4096 * 4), 4):
             l1_pte = self.ramdump.read_word(l1_pte_ptr, False)
             self.global_page_table[gb_i] = l1_pte
             if l1_pte is None:
@@ -398,8 +399,6 @@ class Armv7LPAEMMU(MMU):
         pass
 
     def page_table_walk(self, virt):
-        self.ttbr = self.ramdump.kernel_virt_to_phys(
-            self.ramdump.swapper_pg_dir_addr)
         info = self.translate(virt)
         return info.phys if info is not None else None
 
@@ -497,6 +496,7 @@ class Armv8MMU(MMU):
     TL_DESCRIPTOR_RESERVED = 0x1
     TL_DESCRIPTOR_PAGE = 0x3
 
+
     def do_fl_sl_level_lookup(self, table_base_address, table_index,
                               input_addr_split, block_split):
         descriptor, addr = self.do_level_lookup(
@@ -583,10 +583,6 @@ class Armv8MMU(MMU):
         pass
 
     def page_table_walk(self, virt):
-
-        self.ttbr = self.ramdump.kernel_virt_to_phys(
-            self.ramdump.swapper_pg_dir_addr)
-
         virt_r = Register(virt,
             zl_index=(47,39),
             fl_index=(38,30),

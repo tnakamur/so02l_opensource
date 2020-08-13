@@ -35,6 +35,7 @@
 #include <libexif/olympus/exif-mnote-data-olympus.h>
 #include <libexif/pentax/exif-mnote-data-pentax.h>
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -191,9 +192,12 @@ exif_data_load_data_entry (ExifData *data, ExifEntry *entry,
 		doff = offset + 8;
 
 	/* Sanity checks */
-	if ((doff + s < doff) || (doff + s < s) || (doff + s > size)) {
+	int64_t doff64 = doff;
+	int64_t s64 = s;
+	if (doff64 + s64 > (int64_t) size) {
 		exif_log (data->priv->log, EXIF_LOG_CODE_DEBUG, "ExifData",
-				  "Tag data past end of buffer (%u > %u)", doff+s, size);	
+				  "Tag data past end of buffer (%" PRId64 " > %u)",
+				  doff64+s64, size);
 		return 0;
 	}
 
@@ -295,7 +299,9 @@ exif_data_save_data_entry (ExifData *data, ExifEntry *e,
 	/* Write the data. Fill unneeded bytes with 0. Do not crash with
 	 * e->data is NULL */
 	if (e->data) {
-		memcpy (*d + 6 + doff, e->data, s);
+		unsigned int len = s;
+		if (e->size < s) len = e->size;
+		memcpy (*d + 6 + doff, e->data, len);
 	} else {
 		memset (*d + 6 + doff, 0, s);
 	}
@@ -904,7 +910,7 @@ exif_data_load_data (ExifData *data, const unsigned char *d_orig,
 		  "IFD 0 at %i.", (int) offset);
 
 	/* Sanity check the offset, being careful about overflow */
-	if (offset > ds || offset + 6 + 2 > ds)
+	if (offset > ds || (uint64_t)offset + 6 + 2 > ds)
 		return;
 
 	/* Parse the actual exif data (usually offset 14 from start) */
@@ -912,7 +918,7 @@ exif_data_load_data (ExifData *data, const unsigned char *d_orig,
 
 	/* IFD 1 offset */
 	n = exif_get_short (d + 6 + offset, data->priv->order);
-	if (offset + 6 + 2 + 12 * n + 4 > ds)
+	if ((uint64_t)offset + 6 + 2 + 12 * n + 4 > ds)
 		return;
 
 	offset = exif_get_long (d + 6 + offset + 2 + 12 * n, data->priv->order);
@@ -921,7 +927,7 @@ exif_data_load_data (ExifData *data, const unsigned char *d_orig,
 			  "IFD 1 at %i.", (int) offset);
 
 		/* Sanity check. */
-		if (offset > ds || offset + 6 > ds) {
+		if (offset > ds || (uint64_t)offset + 6 > ds) {
 			exif_log (data->priv->log, EXIF_LOG_CODE_CORRUPT_DATA,
 				  "ExifData", "Bogus offset of IFD1.");
 		} else {

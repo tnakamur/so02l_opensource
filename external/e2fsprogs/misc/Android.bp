@@ -5,6 +5,7 @@
 cc_library {
     name: "libext2_misc",
     host_supported: true,
+    recovery_available: true,
     defaults: ["e2fsprogs-defaults"],
 
     target: {
@@ -20,8 +21,9 @@ cc_library {
     ],
     cflags: ["-Wno-error=format-extra-args"],
     shared_libs: [
-        "libext2_quota",
         "libext2fs",
+        "libext2_com_err",
+        "libext2_quota",
     ],
     system_shared_libs: ["libc", "libdl"],
     export_include_dirs: ["."],
@@ -33,6 +35,7 @@ cc_library {
 cc_binary {
     name: "mke2fs",
     host_supported: true,
+    recovery_available: true,
     defaults: ["e2fsprogs-defaults"],
 
     srcs: [
@@ -100,6 +103,48 @@ cc_binary {
     include_dirs: ["external/e2fsprogs/e2fsck"],
 }
 
+//########################################################################
+// Build mke2fs_static_mr
+
+cc_binary {
+    name: "mke2fs_static_mr",
+    recovery_available: true,
+    defaults: ["e2fsprogs-defaults"],
+
+    srcs: [
+        "mke2fs.c",
+        "util.c",
+        "mk_hugefiles.c",
+        "default_profile.c",
+    ],
+    cflags: [
+        "-Wno-error=format",
+        "-Wno-error=type-limits",
+        "-Wno-format-extra-args",
+    ],
+    target: {
+        android: {
+            required: [
+                "mke2fs.conf",
+            ],
+            static_libs: [
+                "libext2_blkid",
+                "libext2_misc",
+                "libext2_uuid",
+                "libext2_quota",
+                "libext2_com_err",
+                "libext2_e2p",
+                "libext2fs",
+                "libsparse",
+                "libbase",
+                "libz",
+            ],
+        },
+    },
+    stl: "libc++_static",
+    include_dirs: ["external/e2fsprogs/e2fsck"],
+}
+
 //##########################################################################
 // Build tune2fs
 
@@ -115,8 +160,8 @@ cc_defaults {
 }
 
 tune2fs_libs = [
-    "libext2_com_err",
     "libext2_blkid",
+    "libext2_com_err",
     "libext2_quota",
     "libext2_uuid",
     "libext2_e2p",
@@ -267,6 +312,21 @@ cc_binary {
         "libext2_blkid",
         "libext2_com_err",
         "libext2_quota",
+    ],
+    system_shared_libs: ["libc", "libdl"],
+}
+
+//##########################################################################
+// Build filefrag
+
+cc_binary {
+    name: "filefrag",
+    host_supported: true,
+    defaults: ["e2fsprogs-defaults"],
+
+    srcs: ["filefrag.c"],
+    shared_libs: [
+        "libext2fs",
     ],
     system_shared_libs: ["libc", "libdl"],
 }

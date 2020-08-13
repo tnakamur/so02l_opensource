@@ -1,4 +1,4 @@
-# Copyright (c) 2016-2018 The Linux Foundation. All rights reserved.
+# Copyright (c) 2016-2019 The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -22,12 +22,15 @@ class MemStats(RamParser):
         vm = self.ramdump.read_word(vmlist + self.vm_offset)
         if vm is None:
             return
-        size = self.ramdump.read_structure_field(
-                vm, 'struct vm_struct', 'size')
-        flags = self.ramdump.read_structure_field(
+
+        pages = self.ramdump.read_structure_field(
+                vm, 'struct vm_struct', 'nr_pages')
+        vm_flags = self.ramdump.read_structure_field(
                     vm, 'struct vm_struct', 'flags')
-        if flags == VM_ALLOC:
-            self.vmalloc_size = self.vmalloc_size + size
+        if vm_flags is None:
+            return
+        if (vm_flags & VM_ALLOC == VM_ALLOC):
+            self.vmalloc_size = self.vmalloc_size + pages
 
     def pages_to_mb(self, pages):
         val = 0
@@ -41,14 +44,24 @@ class MemStats(RamParser):
             val = (bytes / 1024) / 1024
         return val
 
+    def pages_to_mb(self, pages):
+        val = 0
+        if pages != 0:
+            val = (pages * 4) / 1024
+        return val
+
     def calculate_vmalloc(self):
-        next_offset = self.ramdump.field_offset('struct vmap_area', 'list')
-        vmlist = self.ramdump.read_word('vmap_area_list')
-        vm_offset = self.ramdump.field_offset('struct vmap_area', 'vm')
-        self.vm_offset = vm_offset
-        list_walker = llist.ListWalker(self.ramdump, vmlist, next_offset)
-        list_walker.walk(vmlist, self.list_func)
-        self.vmalloc_size = self.bytes_to_mb(self.vmalloc_size)
+        if self.ramdump.address_of('nr_vmalloc_pages') is None:
+            next_offset = self.ramdump.field_offset('struct vmap_area', 'list')
+            vmlist = self.ramdump.read_word('vmap_area_list')
+            vm_offset = self.ramdump.field_offset('struct vmap_area', 'vm')
+            self.vm_offset = vm_offset
+            list_walker = llist.ListWalker(self.ramdump, vmlist, next_offset)
+            list_walker.walk(vmlist, self.list_func)
+            self.vmalloc_size = self.pages_to_mb(self.vmalloc_size)
+        else:
+            val = self.ramdump.read_u64('nr_vmalloc_pages')
+            self.vmalloc_size = self.pages_to_mb(val)
 
     def calculate_vm_stat(self):
         # Other memory :  NR_ANON_PAGES + NR_FILE_PAGES + NR_PAGETABLE \
@@ -180,23 +193,35 @@ class MemStats(RamParser):
             kgsl_memory = 0
 
         # zcompressed ram
-        if self.ramdump.kernel_version >= (4, 14):
-            stat_val = 0
-        elif self.ramdump.kernel_version >= (4, 4):
-            zram_index_idr = self.ramdump.read_word('zram_index_idr')
+        if self.ramdump.kernel_version >= (4, 4):
+            if self.ramdump.kernel_version >= (4, 14):
+                zram_index_idr = self.ramdump.address_of('zram_index_idr')
+            else:
+                zram_index_idr = self.ramdump.read_word('zram_index_idr')
             if zram_index_idr is None:
                 stat_val = 0
             else:
-                idr_layer_ary_offset = self.ramdump.field_offset(
-                            'struct idr_layer', 'ary')
-                idr_layer_ary = self.ramdump.read_word(zram_index_idr +
+                if self.ramdump.kernel_version >= (4, 14):
+                    idr_layer_ary_offset = self.ramdump.field_offset(
+                            'struct radix_tree_root', 'rnode')
+                    idr_layer_ary = self.ramdump.read_word(zram_index_idr +
                                                    idr_layer_ary_offset)
-                zram_meta = idr_layer_ary + self.ramdump.field_offset(
-                                'struct zram', 'meta')
-                zram_meta = self.ramdump.read_word(zram_meta)
-                mem_pool = zram_meta + self.ramdump.field_offset(
+                else:
+                    idr_layer_ary_offset = self.ramdump.field_offset(
+                                'struct idr_layer', 'ary')
+                    idr_layer_ary = self.ramdump.read_word(zram_index_idr +
+                                                       idr_layer_ary_offset)
+                try:
+                    zram_meta = idr_layer_ary + self.ramdump.field_offset(
+                                    'struct zram', 'meta')
+                    zram_meta = self.ramdump.read_word(zram_meta)
+                    mem_pool = zram_meta + self.ramdump.field_offset(
                             'struct zram_meta', 'mem_pool')
-                mem_pool = self.ramdump.read_word(mem_pool)
+                    mem_pool = self.ramdump.read_word(mem_pool)
+                except TypeError:
+                    mem_pool = idr_layer_ary + self.ramdump.field_offset(
+                                'struct zram', 'mem_pool')
+                    mem_pool = self.ramdump.read_word(mem_pool)
                 if mem_pool is None:
                     stat_val = 0
                 else:
@@ -222,6 +247,15 @@ class MemStats(RamParser):
         # vmalloc area
         self.calculate_vmalloc()
 
+        if type(ion_mem) is str:
+            accounted_mem = total_free + total_slab + kgsl_memory + \
+                            self.vmalloc_size + other_mem
+        else:
+            accounted_mem = total_free + total_slab + ion_mem + kgsl_memory + \
+                        self.vmalloc_size + other_mem
+
+        unaccounted_mem = total_mem - accounted_mem
+
         # Output prints
         out_mem_stat.write('{0:30}: {1:8} MB'.format(
                                 "Total RAM", total_mem))
@@ -241,6 +275,8 @@ class MemStats(RamParser):
                             "Others  ", other_mem))
         out_mem_stat.write('\n{0:30}: {1:8} MB'.format(
                             "Cached  ",cached))
+        out_mem_stat.write('\n\n{0:30}: {1:8} MB'.format(
+                            "Total Unaccounted Memory ",unaccounted_mem))
 
     def parse(self):
         with self.ramdump.open_file('mem_stat.txt') as out_mem_stat:

@@ -38,10 +38,6 @@
  *       the mode has been programmed, along with possible test patterns.
  */
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <assert.h>
 #include <ctype.h>
 #include <stdbool.h>
@@ -171,6 +167,15 @@ static const char *mode_flag_names[] = {
 
 static bit_name_fn(mode_flag)
 
+static void dump_fourcc(uint32_t fourcc)
+{
+	printf(" %c%c%c%c",
+		fourcc,
+		fourcc >> 8,
+		fourcc >> 16,
+		fourcc >> 24);
+}
+
 static void dump_encoders(struct device *dev)
 {
 	drmModeEncoder *encoder;
@@ -246,6 +251,89 @@ static void dump_blob(struct device *dev, uint32_t blob_id)
 			printf("%c", blob_data[i]);
 		}
 		printf("\n-------------------------------------------------\n");
+	}
+
+	drmModeFreePropertyBlob(blob);
+}
+
+static const char *modifier_to_string(uint64_t modifier)
+{
+	switch (modifier) {
+	case DRM_FORMAT_MOD_INVALID:
+		return "INVALID";
+	case DRM_FORMAT_MOD_LINEAR:
+		return "LINEAR";
+	case I915_FORMAT_MOD_X_TILED:
+		return "X_TILED";
+	case I915_FORMAT_MOD_Y_TILED:
+		return "Y_TILED";
+	case I915_FORMAT_MOD_Yf_TILED:
+		return "Yf_TILED";
+	case I915_FORMAT_MOD_Y_TILED_CCS:
+		return "Y_TILED_CCS";
+	case I915_FORMAT_MOD_Yf_TILED_CCS:
+		return "Yf_TILED_CCS";
+	case DRM_FORMAT_MOD_SAMSUNG_64_32_TILE:
+		return "SAMSUNG_64_32_TILE";
+	case DRM_FORMAT_MOD_VIVANTE_TILED:
+		return "VIVANTE_TILED";
+	case DRM_FORMAT_MOD_VIVANTE_SUPER_TILED:
+		return "VIVANTE_SUPER_TILED";
+	case DRM_FORMAT_MOD_VIVANTE_SPLIT_TILED:
+		return "VIVANTE_SPLIT_TILED";
+	case DRM_FORMAT_MOD_VIVANTE_SPLIT_SUPER_TILED:
+		return "VIVANTE_SPLIT_SUPER_TILED";
+	case DRM_FORMAT_MOD_NVIDIA_TEGRA_TILED:
+		return "NVIDIA_TEGRA_TILED";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(0):
+		return "NVIDIA_16BX2_BLOCK(0)";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(1):
+		return "NVIDIA_16BX2_BLOCK(1)";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(2):
+		return "NVIDIA_16BX2_BLOCK(2)";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(3):
+		return "NVIDIA_16BX2_BLOCK(3)";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(4):
+		return "NVIDIA_16BX2_BLOCK(4)";
+	case DRM_FORMAT_MOD_NVIDIA_16BX2_BLOCK(5):
+		return "NVIDIA_16BX2_BLOCK(5)";
+	case DRM_FORMAT_MOD_BROADCOM_VC4_T_TILED:
+		return "MOD_BROADCOM_VC4_T_TILED";
+	default:
+		return "(UNKNOWN MODIFIER)";
+	}
+}
+
+static void dump_in_formats(struct device *dev, uint32_t blob_id)
+{
+	uint32_t i, j;
+	drmModePropertyBlobPtr blob;
+	struct drm_format_modifier_blob *header;
+	uint32_t *formats;
+	struct drm_format_modifier *modifiers;
+
+	printf("\t\tin_formats blob decoded:\n");
+	blob = drmModeGetPropertyBlob(dev->fd, blob_id);
+	if (!blob) {
+		printf("\n");
+		return;
+	}
+
+	header = blob->data;
+	formats = (uint32_t *) ((char *) header + header->formats_offset);
+	modifiers = (struct drm_format_modifier *)
+		((char *) header + header->modifiers_offset);
+
+	for (i = 0; i < header->count_formats; i++) {
+		printf("\t\t\t");
+		dump_fourcc(formats[i]);
+		printf(": ");
+		for (j = 0; j < header->count_modifiers; j++) {
+			uint64_t mask = 1ULL << i;
+			if (modifiers[j].formats & mask)
+				printf(" %s", modifier_to_string(modifiers[j].modifier));
+		}
+		printf("\n");
 	}
 
 	drmModeFreePropertyBlob(blob);
@@ -328,6 +416,9 @@ static void dump_prop(struct device *dev, drmModePropertyPtr prop,
 		printf(" %"PRId64"\n", value);
 	else
 		printf(" %"PRIu64"\n", value);
+
+	if (strcmp(prop->name, "IN_FORMATS") == 0)
+		dump_in_formats(dev, value);
 }
 
 static void dump_connectors(struct device *dev)
@@ -452,7 +543,7 @@ static void dump_planes(struct device *dev)
 
 		printf("  formats:");
 		for (j = 0; j < ovr->count_formats; j++)
-			printf(" %4.4s", (char *)&ovr->formats[j]);
+			dump_fourcc(ovr->formats[j]);
 		printf("\n");
 
 		if (plane->props) {
@@ -533,7 +624,6 @@ static struct resources *get_resources(struct device *dev)
 		return NULL;
 
 	drmSetClientCap(dev->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
-	drmSetClientCap(dev->fd, DRM_CLIENT_CAP_ATOMIC, 1);
 
 	res->res = drmModeGetResources(dev->fd);
 	if (!res->res) {
@@ -571,10 +661,13 @@ static struct resources *get_resources(struct device *dev)
 	for (i = 0; i < res->res->count_connectors; i++) {
 		struct connector *connector = &res->connectors[i];
 		drmModeConnector *conn = connector->connector;
+		int num;
 
-		asprintf(&connector->name, "%s-%u",
+		num = asprintf(&connector->name, "%s-%u",
 			 util_lookup_connector_type_name(conn->connector_type),
 			 conn->connector_type_id);
+		if (num < 0)
+			goto error;
 	}
 
 #define get_properties(_res, __res, type, Type)					\

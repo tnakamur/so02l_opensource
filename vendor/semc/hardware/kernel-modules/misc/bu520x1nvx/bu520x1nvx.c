@@ -218,6 +218,7 @@ static irqreturn_t bu520x1nvx_isr(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+#ifndef CONFIG_HALL_SENSOR_NOT_USE_SETUP_TIMER
 static void bu520x1nvx_det_tmr_func(unsigned long func_data)
 {
 	struct bu520x1nvx_event_data *edata =
@@ -225,6 +226,15 @@ static void bu520x1nvx_det_tmr_func(unsigned long func_data)
 
 	schedule_work(&edata->det_work);
 }
+#else
+static void bu520x1nvx_det_tmr_func(struct timer_list *t)
+{
+	struct bu520x1nvx_event_data *edata =
+		from_timer(edata, t, det_timer);
+
+	schedule_work(&edata->det_work);
+}
+#endif
 
 static void bu520x1nvx_det_work(struct work_struct *work)
 {
@@ -352,9 +362,13 @@ static int bu520x1nvx_setup_event(struct platform_device *pdev,
 	irqflags = IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
 
 	INIT_WORK(&edata->det_work, bu520x1nvx_det_work);
-
+#ifndef CONFIG_HALL_SENSOR_NOT_USE_SETUP_TIMER
 	setup_timer(&edata->det_timer,
 		    bu520x1nvx_det_tmr_func, (unsigned long)edata);
+#else
+	timer_setup(&edata->det_timer,
+		    bu520x1nvx_det_tmr_func, 0);
+#endif
 
 	error = request_any_context_irq(edata->irq, isr, irqflags, desc, edata);
 	if (error < 0) {
@@ -565,6 +579,7 @@ static int bu520x1nvx_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "create_file failed\n");
 		goto fail_setup_event;
 	}
+	kobject_uevent(&ddata->dev->kobj, KOBJ_CHANGE);
 	ddata->input_lid_state = bu520x1nvx_get_lid_state(event);
 	bu520x1nvx_report_input_event(ddata->input_dev, event);
 #endif

@@ -10,16 +10,20 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
+#include <linux/moduleparam.h>
 
 struct sec_ts_data *tsp_info;
 
 #include "include/sec_ts.h"
 
+static int report_rejected_event = 0;
+module_param(report_rejected_event, int, 0660);
+
 struct class *sec_class;
 struct sec_ts_data *ts_dup;
 
-int portrait_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM] = {40, 240, 90, 300};
-int landscape_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM] = {240, 30, 300, 90};
+u32 portrait_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM] = { 0 };
+u32 landscape_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM] = { 0 };
 
 #ifdef USE_POWER_RESET_WORK
 static void sec_ts_reset_work(struct work_struct *work);
@@ -39,19 +43,36 @@ static int sec_ts_pw_lock(struct sec_ts_data *ts, incell_pw_lock status);
 
 void sec_ts_set_irq(struct sec_ts_data *ts, bool enable)
 {
-	input_dbg(ts->debug_flag, &ts->client->dev, "ts->client->irq [%d]\n", ts->irq_status);
-	if (enable && !ts->irq_status) {
-		enable_irq(ts->client->irq);
-		ts->irq_status = true;
-		input_info(true, &ts->client->dev, "Change irq enabled\n");
-	} else if (!enable && ts->irq_status) {
-		disable_irq_nosync(ts->client->irq);
-		ts->irq_status = false;
-		input_info(true, &ts->client->dev, "Change irq was disable\n");
-	} else {
-		input_info(true, &ts->client->dev, "no irq change [%s]\n",
-		     ts->irq_status ? "enable" : "disable");
+	if (!mutex_trylock(&ts->irq_mutex)) {
+		input_err(true, &ts->client->dev, "%s: sec_ts_set_irq() is called by two or more threaded at the same time.\n", __func__);
+		mutex_lock(&ts->irq_mutex);
 	}
+
+	if (ts->client->irq) {
+		if (enable && !ts->irq_status) {
+			enable_irq(ts->client->irq);
+			ts->irq_status = true;
+			input_info(true, &ts->client->dev, "Change irq enabled\n");
+		} else if (!enable && ts->irq_status) {
+			disable_irq_nosync(ts->client->irq);
+			ts->irq_status = false;
+			input_info(true, &ts->client->dev, "Change irq was disable\n");
+		} else {
+			input_info(true, &ts->client->dev, "no irq change [%s]\n",
+				ts->irq_status ? "enable" : "disable");
+		}
+
+		if (ts->irq_status &&
+			irqd_irq_disabled(irq_get_irq_data(ts->client->irq))) {
+			input_err(true, &ts->client->dev, "%s: unexpected irq %d disable! Fixing..\n", __func__, ts->client->irq);
+			enable_irq(ts->client->irq);
+		} else if (!ts->irq_status &&
+			!irqd_irq_disabled(irq_get_irq_data(ts->client->irq))) {
+			input_err(true, &ts->client->dev, "%s: unexpected irq %d enable! Fixing..\n", __func__, ts->client->irq);
+			disable_irq(ts->client->irq);
+		}
+	}
+	mutex_unlock(&ts->irq_mutex);
 }
 
 void sec_ts_free_irq(struct sec_ts_data *ts)
@@ -60,12 +81,13 @@ void sec_ts_free_irq(struct sec_ts_data *ts)
 		free_irq(ts->client->irq, ts);
 		ts->client->irq = 0;
 		input_info(true, &ts->client->dev, "irq release done [%s]\n", ts->client->irq);
-		return;
 	}
+	return;
 }
 
 void sec_ts_irq_wake(struct sec_ts_data *ts, bool enable)
 {
+	mutex_lock(&ts->irq_mutex);
 	input_dbg(ts->debug_flag, &ts->client->dev, "irq_wake_mask [%d]\n", ts->irq_wake_mask);
 	if (enable && !ts->irq_wake_mask) {
 		enable_irq_wake(ts->client->irq);
@@ -77,6 +99,7 @@ void sec_ts_irq_wake(struct sec_ts_data *ts, bool enable)
 		input_info(true, &ts->client->dev, "no irq wake change [%s]\n",
 		     ts->irq_wake_mask ? "enable" : "disable");
 	}
+	mutex_unlock(&ts->irq_mutex);
 }
 
 int sec_ts_i2c_write(struct sec_ts_data *ts, u8 reg, u8 *data, int len)
@@ -575,6 +598,39 @@ void sec_ts_reinit(struct sec_ts_data *ts)
 	return;
 }
 
+void report_touch(struct sec_ts_data *ts, u8 t_id, bool stored)
+{
+	u16 x;
+	u16 y;
+
+	if (!report_rejected_event && stored)
+		return;
+
+	if (stored) {
+		x = ts->saved_data_x[t_id];
+		y = ts->saved_data_y[t_id];
+	} else {
+		x = ts->coord[t_id].x;
+		y = ts->coord[t_id].y;
+	}
+
+	input_mt_slot(ts->input_dev, t_id);
+	input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 1);
+	input_report_key(ts->input_dev, BTN_TOUCH, 1);
+	input_report_key(ts->input_dev, BTN_TOOL_FINGER, 1);
+
+	input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);
+	input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);
+	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, ts->coord[t_id].major);
+	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, ts->coord[t_id].minor);
+	if (ts->plat_data->support_mt_pressure)
+		input_report_abs(ts->input_dev, ABS_MT_PRESSURE, ts->coord[t_id].z);
+
+	if (stored)
+		input_sync(ts->input_dev);
+	return;
+}
+
 #define MAX_EVENT_COUNT 32
 static void sec_ts_read_event(struct sec_ts_data *ts)
 {
@@ -781,7 +837,11 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 					if (ts->coord[t_id].action == SEC_TS_COORDINATE_ACTION_RELEASE) {
 
 						do_gettimeofday(&ts->time_released[t_id]);
-						ts->report_flag[t_id] = false;
+						if (ts->coord[t_id].ttype != SEC_TS_TOUCHTYPE_SIDE)
+							ts->report_flag[t_id] = false;
+
+						ts->saved_data_x[t_id] = 0;
+						ts->saved_data_y[t_id] = 0;
 
 						if (ts->time_longest < (ts->time_released[t_id].tv_sec - ts->time_pressed[t_id].tv_sec))
 							ts->time_longest = (ts->time_released[t_id].tv_sec - ts->time_pressed[t_id].tv_sec);
@@ -831,44 +891,42 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 
 
 					} else if (ts->coord[t_id].action == SEC_TS_COORDINATE_ACTION_PRESS) {
-						if (ts->landscape) {
-							if ((ts->coord[t_id].x < landscape_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - landscape_buffer[0]) && (ts->coord[t_id].y < landscape_buffer[1] || ts->coord[t_id].y > ts->plat_data->max_y - landscape_buffer[1])) {
-								if (!ts->report_flag[t_id])
-									goto skip_process;
-							} else
-								ts->report_flag[t_id] = true;
-						} else {
-							if ((ts->coord[t_id].x < portrait_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - portrait_buffer[0]) && (ts->coord[t_id].y > ts->plat_data->max_y - portrait_buffer[1])) {
-								if (!ts->report_flag[t_id])
-									goto skip_process;
-							} else
-								ts->report_flag[t_id] = true;
-						}
 
 						do_gettimeofday(&ts->time_pressed[t_id]);
-
 						ts->touch_count++;
 						ts->all_finger_count++;
+
+						if (ts->coord[t_id].ttype != SEC_TS_TOUCHTYPE_SIDE) {
+							if (ts->landscape) {
+								if ((ts->coord[t_id].x < landscape_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - landscape_buffer[0]) && (ts->coord[t_id].y < landscape_buffer[1] || ts->coord[t_id].y > ts->plat_data->max_y - landscape_buffer[1])) {
+									if (!ts->report_flag[t_id]) {
+										ts->saved_data_x[t_id] = ts->coord[t_id].x;
+										ts->saved_data_y[t_id] = ts->coord[t_id].y;
+										goto skip_process;
+									}
+								} else
+									ts->report_flag[t_id] = true;
+							} else {
+								if ((ts->coord[t_id].x < portrait_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - portrait_buffer[0]) && (ts->coord[t_id].y > ts->plat_data->max_y - portrait_buffer[1])) {
+									if (!ts->report_flag[t_id]) {
+										ts->saved_data_x[t_id] = ts->coord[t_id].x;
+										ts->saved_data_y[t_id] = ts->coord[t_id].y;
+										goto skip_process;
+									}
+								} else
+									ts->report_flag[t_id] = true;
+							}
+						}
 
 						ts->max_z_value = max((unsigned int)ts->coord[t_id].z, ts->max_z_value);
 						ts->min_z_value = min((unsigned int)ts->coord[t_id].z, ts->min_z_value);
 						ts->sum_z_value += (unsigned int)ts->coord[t_id].z;
 
-						input_mt_slot(ts->input_dev, t_id);
-						input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 1);
-						input_report_key(ts->input_dev, BTN_TOUCH, 1);
-						input_report_key(ts->input_dev, BTN_TOOL_FINGER, 1);
-
-						input_report_abs(ts->input_dev, ABS_MT_POSITION_X, ts->coord[t_id].x);
-						input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, ts->coord[t_id].y);
-						input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, ts->coord[t_id].major);
-						input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, ts->coord[t_id].minor);
+						report_touch(ts, t_id, false);
 						if (ts->brush_mode)
 							input_report_abs(ts->input_dev, ABS_MT_CUSTOM, (ts->coord[t_id].z << 1) | ts->coord[t_id].palm);
 						else
 							input_report_abs(ts->input_dev, ABS_MT_CUSTOM, (BRUSH_Z_DATA << 1) | ts->coord[t_id].palm);
-						if (ts->plat_data->support_mt_pressure)
-							input_report_abs(ts->input_dev, ABS_MT_PRESSURE, ts->coord[t_id].z);
 
 						if ((ts->touch_count > 4) && (ts->check_multi == 0)) {
 							ts->check_multi = 1;
@@ -881,7 +939,7 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 						} else {
 #if !defined(CONFIG_SAMSUNG_PRODUCT_SHIP)
 						input_dbg(ts->debug_flag, &ts->client->dev,
-								"%s[P] tID:%d x:%d y:%d z:%d major:%d minor:%d tc:%d type:%X noise:%x\n",
+								"%s[P] tID:%d x:%d y:%d z:%d major:%d minor:%d tc:%d type:%X noise:%x\n",																																																																																
 								ts->dex_name, t_id, ts->coord[t_id].x,
 								ts->coord[t_id].y, ts->coord[t_id].z,
 								ts->coord[t_id].major, ts->coord[t_id].minor,
@@ -897,24 +955,30 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 #endif
 						}
 					} else if (ts->coord[t_id].action == SEC_TS_COORDINATE_ACTION_MOVE) {
-						if (ts->landscape) {
-							if ((ts->coord[t_id].x < landscape_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - landscape_buffer[0]) && (ts->coord[t_id].y < landscape_buffer[1] || ts->coord[t_id].y > ts->plat_data->max_y - landscape_buffer[1])) {
-								if (!ts->report_flag[t_id])
+						if (ts->coord[t_id].ttype != SEC_TS_TOUCHTYPE_SIDE) {
+							if (ts->landscape) {
+								if ((ts->coord[t_id].x < landscape_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - landscape_buffer[0]) && (ts->coord[t_id].y < landscape_buffer[1] || ts->coord[t_id].y > ts->plat_data->max_y - landscape_buffer[1])) {
+									if (!ts->report_flag[t_id])
+										goto skip_process;
+								} else if ((ts->coord[t_id].x > landscape_buffer[2] && ts->coord[t_id].x < ts->plat_data->max_x - landscape_buffer[2]) || (ts->coord[t_id].y > landscape_buffer[3] && ts->coord[t_id].y < ts->plat_data->max_y - landscape_buffer[3])) {
+									if (!ts->report_flag[t_id]) {
+										report_touch(ts, t_id, true);
+										ts->report_flag[t_id] = true;
+									}
+								} else if (!ts->report_flag[t_id])
 									goto skip_process;
-							} else if ((ts->coord[t_id].x > landscape_buffer[2] && ts->coord[t_id].x < ts->plat_data->max_x - landscape_buffer[2]) || (ts->coord[t_id].y > landscape_buffer[3] && ts->coord[t_id].y < ts->plat_data->max_y - landscape_buffer[3])) {
-								if (!ts->report_flag[t_id])
-									ts->report_flag[t_id] = true;
-							} else if (!ts->report_flag[t_id])
+							} else {
+								if ((ts->coord[t_id].x < portrait_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - portrait_buffer[0]) && (ts->coord[t_id].y > ts->plat_data->max_y - portrait_buffer[1])) {
+									if (!ts->report_flag[t_id])
+										goto skip_process;
+								} else if ((ts->coord[t_id].x > portrait_buffer[2] && ts->coord[t_id].x < ts->plat_data->max_x - portrait_buffer[2]) || (ts->coord[t_id].y < ts->plat_data->max_y - portrait_buffer[3])) {
+									if (!ts->report_flag[t_id]) {
+										report_touch(ts, t_id, true);
+										ts->report_flag[t_id] = true;
+									}
+								} else if (!ts->report_flag[t_id])
 									goto skip_process;
-						} else {
-							if ((ts->coord[t_id].x < portrait_buffer[0] || ts->coord[t_id].x > ts->plat_data->max_x - portrait_buffer[0]) && (ts->coord[t_id].y > ts->plat_data->max_y - portrait_buffer[1])) {
-								if (!ts->report_flag[t_id])
-									goto skip_process;
-							} else if ((ts->coord[t_id].x > portrait_buffer[2] && ts->coord[t_id].x < ts->plat_data->max_x - portrait_buffer[2]) || (ts->coord[t_id].y < ts->plat_data->max_y - portrait_buffer[3])) {
-								if (!ts->report_flag[t_id])
-									ts->report_flag[t_id] = true;
-							} else if (!ts->report_flag[t_id])
-									goto skip_process;
+							}
 						}
 
 						if ((ts->coord[t_id].ttype == SEC_TS_TOUCHTYPE_GLOVE) && !ts->touchkey_glove_mode_status) {
@@ -925,22 +989,13 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 							input_report_switch(ts->input_dev, SW_GLOVE, 0);
 						}
 
-						input_mt_slot(ts->input_dev, t_id);
-						input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, 1);
-						input_report_key(ts->input_dev, BTN_TOUCH, 1);
-						input_report_key(ts->input_dev, BTN_TOOL_FINGER, 1);
+						report_touch(ts, t_id, false);
 
-						input_report_abs(ts->input_dev, ABS_MT_POSITION_X, ts->coord[t_id].x);
-						input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, ts->coord[t_id].y);
-						input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, ts->coord[t_id].major);
-						input_report_abs(ts->input_dev, ABS_MT_TOUCH_MINOR, ts->coord[t_id].minor);
 						if (ts->brush_mode)
 							input_report_abs(ts->input_dev, ABS_MT_CUSTOM, (ts->coord[t_id].z << 1) | ts->coord[t_id].palm);
 						else
 							input_report_abs(ts->input_dev, ABS_MT_CUSTOM, (BRUSH_Z_DATA << 1) | ts->coord[t_id].palm);
 
-						if (ts->plat_data->support_mt_pressure)
-							input_report_abs(ts->input_dev, ABS_MT_PRESSURE, ts->coord[t_id].z);
 						ts->coord[t_id].mcount++;
 
 						if (ts->coord[t_id].ttype == SEC_TS_TOUCHTYPE_SIDE)
@@ -1382,6 +1437,7 @@ static int sec_ts_parse_dt_feature(struct i2c_client *client)
 	struct sec_ts_plat_data *pdata = dev->platform_data;
 	struct device_node *np = dev->of_node;
 	u32 tmp_value = 0;
+	u32 rejection_buff[SEC_TS_GRIP_REJECTION_BORDER_NUM];
 
 	if (np == NULL)
 		return -ENODEV;
@@ -1461,6 +1517,22 @@ static int sec_ts_parse_dt_feature(struct i2c_client *client)
 		input_info(true, &client->dev, "stamina_mode_supported: %s\n",
 			pdata->stamina_mode.supported ? "true" : "false");
 	}
+
+	if (of_property_read_u32_array(np, "sec,rejection_area_portrait", rejection_buff, SEC_TS_GRIP_REJECTION_BORDER_NUM)) {
+		input_err(true, &client->dev, "%s: Failed to get portrait rejection area data\n", __func__);
+		return 0;
+	}
+
+	memcpy(portrait_buffer, rejection_buff, sizeof(portrait_buffer));
+	memcpy(pdata->portrait_buffer_default, rejection_buff, sizeof(pdata->portrait_buffer_default));
+
+	if (of_property_read_u32_array(np, "sec,rejection_area_landscape", rejection_buff, SEC_TS_GRIP_REJECTION_BORDER_NUM)) {
+		input_err(true, &client->dev, "%s: Failed to get landscape rejection area data\n", __func__);
+		return 0;
+	}
+
+	memcpy(landscape_buffer, rejection_buff, sizeof(landscape_buffer));
+	memcpy(pdata->landscape_buffer_default, rejection_buff, sizeof(pdata->landscape_buffer_default));
 
 	return 0;
 }
@@ -2006,6 +2078,8 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	mutex_init(&ts->i2c_mutex);
 	mutex_init(&ts->eventlock);
 	mutex_init(&ts->modechange);
+	mutex_init(&ts->irq_mutex);
+	mutex_init(&ts->aod_mutex);
 
 	init_completion(&ts->resume_done);
 	complete_all(&ts->resume_done);
@@ -2743,10 +2817,13 @@ static int sec_ts_remove(struct i2c_client *client)
 	mutex_destroy(&ts->i2c_mutex);
 	mutex_destroy(&ts->eventlock);
 	mutex_destroy(&ts->modechange);
+	mutex_destroy(&ts->irq_mutex);
+	mutex_destroy(&ts->aod_mutex);
 
 	ts->input_dev_pad = NULL;
 	ts->input_dev = NULL;
 	ts->input_dev_touch = NULL;
+	drm_unregister_client(&ts->drm_notif);
 	ts_dup = NULL;
 
 	kfree(ts);
@@ -2764,10 +2841,13 @@ static void sec_ts_shutdown(struct i2c_client *client)
 
 int sec_ts_stop_device(struct sec_ts_data *ts)
 {
+#ifndef TOUCH_DRIVER_NOT_SOD_PROXIMITY
 	int display_sod_mode;
+#endif
 
 	input_info(true, &ts->client->dev, "%s: start\n", __func__);
 
+#ifndef TOUCH_DRIVER_NOT_SOD_PROXIMITY
 	if (ts->plat_data->sod_mode.status) {
 		display_sod_mode = incell_get_display_sod_mode();
 		if ((!ts->cover_set && ts->flip_enable) || display_sod_mode) {
@@ -2780,6 +2860,13 @@ int sec_ts_stop_device(struct sec_ts_data *ts)
 			return 0;
 		}
 	}
+#else
+	if (ts->plat_data->sod_mode.status) {
+		sec_ts_set_irq(ts, true);
+		sec_ts_set_lowpowermode(ts, TO_LOWPOWER_MODE);
+		return 0;
+	}
+#endif
 
 	mutex_lock(&ts->device_mutex);
 
@@ -2960,6 +3047,7 @@ int drm_notifier_callback(struct notifier_block *self, unsigned long event, void
 	struct timespec time;
 	int blank;
 
+	mutex_lock(&ts->aod_mutex);
 	if (evdata && evdata->data) {
 		if (event == DRM_EXT_EVENT_BEFORE_BLANK) {
 			blank = *(int *)evdata->data;
@@ -2971,6 +3059,7 @@ int drm_notifier_callback(struct notifier_block *self, unsigned long event, void
 			case DRM_BLANK_POWERDOWN:
 				if (!ts->after_work.done) {
 					input_info(true, &ts->client->dev, "not already sleep out\n");
+					mutex_unlock(&ts->aod_mutex);
 					return 0;
 				}
 
@@ -2999,22 +3088,31 @@ int drm_notifier_callback(struct notifier_block *self, unsigned long event, void
 			case DRM_BLANK_UNBLANK:
 				if (!ts->after_work.done && !ts->after_work.err) {
 					input_info(true, &ts->client->dev, "not already sleep out\n");
-					return 0;
+				} else {
+					get_monotonic_boottime(&time);
+					input_info(true, &ts->client->dev, "start@%ld.%06ld\n",
+						time.tv_sec, time.tv_nsec);
+					sec_ts_resume(ts);
+					get_monotonic_boottime(&time);
+					input_info(true, &ts->client->dev, "end@%ld.%06ld\n",
+						time.tv_sec, time.tv_nsec);
 				}
-				get_monotonic_boottime(&time);
-				input_info(true, &ts->client->dev, "start@%ld.%06ld\n",
-					time.tv_sec, time.tv_nsec);
-				sec_ts_resume(ts);
-				get_monotonic_boottime(&time);
-				input_info(true, &ts->client->dev, "end@%ld.%06ld\n",
-					time.tv_sec, time.tv_nsec);
 				break;
 			default:
 				break;
 			}
+			if (ts->aod_pending) {
+				input_info(true, &ts->client->dev,
+					"Applying aod_pending_lowpower_mode: %d\n",
+					ts->aod_pending_lowpower_mode);
+				ts->aod_pending = false;
+				ts->lowpower_mode = ts->aod_pending_lowpower_mode;
+				sec_ts_set_lowpowermode(ts, ts->lowpower_mode);
+			}
 		}
 	}
 
+	mutex_unlock(&ts->aod_mutex);
 	return 0;
 }
 

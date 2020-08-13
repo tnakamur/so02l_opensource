@@ -1,4 +1,4 @@
-# Copyright (c) 2018 The Linux Foundation. All rights reserved.
+# Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -305,17 +305,53 @@ def print_cma_areas(ramdump):
         cma_index = cma_index + 1
 
 
+def print_tasklet_info(ramdump, core):
+    print_out_str("Pending Tasklet info :")
+    tasklet_vec_addr = ramdump.address_of('tasklet_vec')
+    tasklet_head = tasklet_vec_addr + ramdump.per_cpu_offset(core)
+    tasklet_head = ramdump.read_word(tasklet_head)
+    next_offset = ramdump.field_offset('struct tasklet_struct', 'next')
+    func_offset = ramdump.field_offset('struct tasklet_struct', 'func')
+    while (tasklet_head != 0x0):
+        tasklet_func_addr = ramdump.read_word(tasklet_head + func_offset)
+        tasklet_func = ramdump.unwind_lookup(tasklet_func_addr)
+        if tasklet_func is None:
+            tasklet_func = "Dynamic module/symbol not found"
+        print_out_str("{0:x} -> {1}".format(tasklet_func_addr, tasklet_func))
+        tasklet_head = ramdump.read_word(tasklet_head+next_offset)
+
+
 def parse_softirq_stat(ramdump):
     irq_stat_addr = ramdump.address_of('irq_stat')
+    softirq_name_addr = ramdump.address_of('softirq_to_name')
+    sizeof_softirq_name = ramdump.sizeof('softirq_to_name')
+    sofrirq_name_arr_size = sizeof_softirq_name / ramdump.sizeof('char *')
     no_of_cpus = ramdump.get_num_cpus()
     index = 0
     size_of_irq_stat = ramdump.sizeof('irq_cpustat_t')
     while index < no_of_cpus:
-        irq_stat = irq_stat_addr + index*size_of_irq_stat
+        if ramdump.kernel_version >= (4, 19):
+            irq_stat = irq_stat_addr + ramdump.per_cpu_offset(index)
+        else:
+            irq_stat = irq_stat_addr + index*size_of_irq_stat
         softirq_pending = ramdump.read_structure_field(
                                 irq_stat, 'irq_cpustat_t', '__softirq_pending')
+        pending = ""
+        pos = sofrirq_name_arr_size - 1
+        while pos:
+            if softirq_pending & (1 << pos):
+                flag_addr = ramdump.read_word(ramdump.array_index(
+                    softirq_name_addr, "char *", pos))
+                flag = ramdump.read_cstring(flag_addr, 48)
+                pending += flag
+                pending += " | "
+            pos = pos - 1
+        if pending == "":
+            pending = "None"
         print_out_str("core {0} : __softirq_pending = {1}".format(
-                                index, softirq_pending))
+                                index, pending))
+        if "TASKLET" in pending:
+            print_tasklet_info(ramdump, index)
         index = index + 1
 
 

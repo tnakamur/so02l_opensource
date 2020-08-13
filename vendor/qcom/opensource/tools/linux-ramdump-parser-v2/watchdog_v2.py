@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
+# Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -358,7 +358,6 @@ sysdbg_cpu64_register_names_v1_4 = [
     ('__reserved1', '__reserved1', False),
     ('__reserved2', '__reserved2', False),
     ('__reserved3', '__reserved3', False),
-    ('__reserved4', '__reserved4', False),
 ]
 
 sysdbg_cpu64_ctxt_regs_type_v1_4 = ''.join([
@@ -413,7 +412,6 @@ sysdbg_cpu64_ctxt_regs_type_v1_4 = ''.join([
     'Q',  # __reserved1
     'Q',  # __reserved2
     'Q',  # __reserved3
-    'Q',  # __reserved4
 ])
 
 sysdbg_neon128_register_names_v1_4 = [
@@ -724,7 +722,10 @@ class TZRegDump_v2():
         pc = self.core_regs.regs['pc']
         if ram_dump.arm64:
             lr = self.core_regs.regs['x30']
-            bt = self.core_regs.regs['sp_el1']
+            if ram_dump.currentEL == 0x2:
+                bt = self.core_regs.regs['sp_el2']
+            else:
+                bt = self.core_regs.regs['sp_el1']
             fp = self.core_regs.regs['x29']
         else:
             lr = self.core_regs.regs['r14_svc']

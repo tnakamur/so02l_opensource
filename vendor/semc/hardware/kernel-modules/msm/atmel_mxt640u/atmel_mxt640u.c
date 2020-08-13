@@ -148,7 +148,7 @@ static void touch_multi_tap_work(struct work_struct *multi_tap_work)
 
 	LOGD("TCI WORK in\n");
 	pm_relax(&ts->client->dev);
-	pm_wakeup_event(&ts->client->dev, msecs_to_jiffies(TAP_WAIT_TIME));
+	pm_wakeup_event(&ts->client->dev, TAP_WAIT_TIME);
 
 	LOGD("T93 ENABLE LPWG\n");
 	send_uevent(lpwg_event);
@@ -1001,7 +1001,7 @@ static int mxt_read_all_diagnostic_data(struct mxt_data *data, u8 dbg_mode, char
 	}
 
 	touch_disable_irq(data);
-	pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+	pm_wakeup_event(&data->client->dev, 2000);
 	mutex_lock(&data->mxt_drv_data->dev_lock);
 
 	/* to make the Page Num to 0 */
@@ -2016,14 +2016,14 @@ static void mxt_proc_t93_messages(struct mxt_data *data, u8 *message)
 		mxt_t6_command(data, MXT_COMMAND_DIAGNOSTIC, UDF_MESSAGE_COMMAND, false);
 		mxt_proc_t37_message(data, message);
 		pm_relax(&data->client->dev);
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(TAP_WAIT_TIME));
+		pm_wakeup_event(&data->client->dev, TAP_WAIT_TIME);
 		hrtimer_try_to_cancel(&data->multi_tap_timer);
 		if (!hrtimer_callback_running(&data->multi_tap_timer))
 			hrtimer_start(&data->multi_tap_timer, ktime_set(0, MS_TO_NS(MXT_WAITED_UDF_TIME)), HRTIMER_MODE_REL);
 	} else if (lpwg_mode_msg & MXT_T93_SECOND_TOUCH) {
 		LOGN("T93 Knock ON!!\n");
 		pm_relax(&data->client->dev);
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(TAP_WAIT_TIME));
+		pm_wakeup_event(&data->client->dev, TAP_WAIT_TIME);
 		send_uevent(knockon_event);
 	}
 
@@ -2058,14 +2058,14 @@ static void mxt_proc_t93_messages(struct mxt_data *data, u8 *message)
 		mxt_t6_command(data, MXT_COMMAND_DIAGNOSTIC, UDF_MESSAGE_COMMAND, false);
 		mxt_proc_t37_message(data, message);
 		pm_relax(&data->client->dev);
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(TAP_WAIT_TIME));
+		pm_wakeup_event(&data->client->dev, TAP_WAIT_TIME);
 		hrtimer_try_to_cancel(&data->multi_tap_timer);
 		if (!hrtimer_callback_running(&data->multi_tap_timer))
 			hrtimer_start(&data->multi_tap_timer, ktime_set(0, MS_TO_NS(MXT_WAITED_UDF_TIME)), HRTIMER_MODE_REL);
 	} else if (msg & MXT_T93_SECOND_TOUCH) {
 		LOGN("T93 Knock ON!!\n");
 		pm_relax(&data->client->dev);
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(TAP_WAIT_TIME));
+		pm_wakeup_event(&data->client->dev, TAP_WAIT_TIME);
 		send_uevent(knockon_event);
 	}
 	if (message[MXT_T93_FAIL_REASON] != MXT_T93_DOUBLE_TAP_OK) {
@@ -2113,7 +2113,7 @@ static void mxt_proc_t24_messages(struct mxt_data *data, u8 *message)
 		y >>= 2;
 
 	if (msg == 0x04) {
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+		pm_wakeup_event(&data->client->dev, 2000);
 		LOGD("Knock On detected x[%3d] y[%3d]\n", x, y);
 		kobject_uevent_env(&device_touch.kobj, KOBJ_CHANGE, knockon_event);
 	} else {
@@ -2547,7 +2547,7 @@ void trigger_usb_state_from_otg(struct mxt_data *data, int usb_type)
 			return;
 		}
 
-		pm_wakeup_event(&mxt_data->client->dev, msecs_to_jiffies(2000));
+		pm_wakeup_event(&mxt_data->client->dev, 2000);
 
 		if (mutex_is_locked(&data->mxt_drv_data->i2c_suspend_lock)) {
 			LOGD("%s mutex_is_locked \n", __func__);
@@ -3042,10 +3042,8 @@ static int mxt_lpwg_debug_interrupt_control(struct mxt_data* data, int mode)
 static irqreturn_t touch_irq_handler(int irq, void *dev_id)
 {
 	struct mxt_data *data = (struct mxt_data *)dev_id;
-	if (data->pm_state >= PM_SUSPEND) {
-		data->pm_state = PM_SUSPEND_IRQ;
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(1000));
-		return IRQ_HANDLED;
+	if (atomic_cmpxchg(&data->pm_state, PM_SUSPEND, PM_SUSPEND_IRQ) >= PM_SUSPEND) {
+		pm_wakeup_event(&data->client->dev, 1000);
 	}
 	return IRQ_WAKE_THREAD;
 }
@@ -3054,6 +3052,11 @@ static irqreturn_t mxt_interrupt(int irq, void *dev_id)
 	struct mxt_data *data = (struct mxt_data*)dev_id;
 	irqreturn_t ret = IRQ_NONE;
 
+	if (atomic_read(&data->pm_state) >= PM_SUSPEND) {
+		/* since level irq, it will trigger again */
+		msleep(10);
+		return IRQ_HANDLED;
+	}
 	if (data->in_bootloader) {
 		/* bootloader state transition completion */
 		complete(&data->bl_completion);
@@ -3068,13 +3071,14 @@ static irqreturn_t mxt_interrupt(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-	mutex_lock(&data->mxt_drv_data->i2c_suspend_lock);
-	if (data->T44_address){
-		ret = mxt_process_messages_t44(data);
-	} else {
-		ret = mxt_process_messages(data);
+	mutex_lock(&data->mxt_drv_data->dev_lock);
+	if (!data->suspended) {
+		if (data->T44_address)
+			ret = mxt_process_messages_t44(data);
+		else
+			ret = mxt_process_messages(data);
 	}
-	mutex_unlock(&data->mxt_drv_data->i2c_suspend_lock);
+	mutex_unlock(&data->mxt_drv_data->dev_lock);
 	return ret;
 }
 
@@ -4538,7 +4542,7 @@ static ssize_t mxt_update_fw_store(struct mxt_data *data, const char *buf, size_
 
 	LOGD("%s\n", __func__);
 
-	pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+	pm_wakeup_event(&data->client->dev, 2000);
 
 	if (data->suspended) {
 		LOGN("LCD On\n");
@@ -4915,6 +4919,13 @@ static bool mxt_get_or_result(int para, ...)
 	return result ? true : false;
 }
 
+static bool mxt_check_force_sleep(struct mxt_data *data)
+{
+	LOGD("cover mode: %d status: %d forcesleep %d\n",
+		data->cover_mode.mode, data->cover_mode.status, data->forcesleep);
+	return (!data->cover_mode.mode && data->cover_mode.status && !data->forcesleep) ? true : false;
+}
+
 static void mxt_set_cover_mode(struct mxt_data *data)
 {
 	int sod_mode = SOD_MODE_ON;
@@ -5086,7 +5097,7 @@ static ssize_t mxt_run_chstatus_show(struct mxt_data *data, char *buf)
 	mxt_power_block(data, POWERLOCK_SYSFS);
 
 	if (data->pdata->panel_on == POWER_OFF) {
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+		pm_wakeup_event(&data->client->dev, 2000);
 		len += snprintf(buf + len, PAGE_SIZE - len, "************************\n");
 		len += snprintf(buf + len, PAGE_SIZE - len, "*** LCD STATUS : OFF ***\n");
 		len += snprintf(buf + len, PAGE_SIZE - len, "************************\n");
@@ -5407,7 +5418,7 @@ static ssize_t mxt_run_microcrack_show(struct mxt_data *data, char *buf)
 	msleep(20);
 
 	touch_disable_irq(data);
-	pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+	pm_wakeup_event(&data->client->dev, 2000);
 	mutex_lock(&data->mxt_drv_data->dev_lock);
 
 	/* to make the Page Num to 0 */
@@ -5578,7 +5589,7 @@ static ssize_t mxt_force_rebase_show(struct mxt_data *data, char *buf)
 	ssize_t len = 0;
 
 	if (data->pdata->panel_on == POWER_OFF) {
-		pm_wakeup_event(&data->client->dev, msecs_to_jiffies(2000));
+		pm_wakeup_event(&data->client->dev, 2000);
 	}
 
 	LOGD("MXT_COMMAND_CALIBRATE\n");
@@ -6665,6 +6676,7 @@ static ssize_t mxt_irq_enable_store(struct mxt_data *data, const char *buf, size
 		count = -EINVAL;
 		goto exit;
 	}
+	data->forcesleep = value;
 	if (value) {
 		if (!mxt_get_pw_status())
 			touch_enable_irq(data);
@@ -9045,6 +9057,7 @@ static int mxt_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	mutex_init(&data->mxt_drv_data->irq_lock);
 	mutex_init(&data->mxt_drv_data->lpwg_lock);
 	mutex_init(&data->mxt_drv_data->dev_lock);
+	atomic_set(&data->pm_state, PM_RESUME);
 
 	data->ref_chk = 1;
 	snprintf(data->phys, sizeof(data->phys), "i2c-%u-%04x/input0", client->adapter->nr, client->addr);
@@ -9219,6 +9232,7 @@ static int mxt_suspend(struct device *dev)
 
 	if(!data->mxt_drv_data->is_probing) {
 		LOGN("%s int status:%d\n", __func__, gpio_get_value(data->pdata->gpio_int));
+		atomic_set(&data->pm_state, PM_SUSPEND);
 	}
 	return 0;
 }
@@ -9230,7 +9244,7 @@ static int mxt_resume(struct device *dev)
 	if(!data->mxt_drv_data->is_probing) {
 		LOGN("%s int status:%d\n", __func__, gpio_get_value(data->pdata->gpio_int));
 
-		if (data->pm_state == PM_SUSPEND_IRQ) {
+		if (atomic_read(&data->pm_state) == PM_SUSPEND_IRQ) {
 			struct irq_desc *desc = irq_to_desc(data->irq);
 
 			if (desc == NULL) {
@@ -9238,14 +9252,10 @@ static int mxt_resume(struct device *dev)
 				return -ENOMEM;
 			}
 
-			data->pm_state = PM_RESUME;
-
 			LOGD("resend interrupt\n");
-
-			return 0;
 		}
 
-		data->pm_state = PM_RESUME;
+		atomic_set(&data->pm_state, PM_RESUME);
 	}
 	return 0;
 }
@@ -9261,6 +9271,11 @@ static void mxt_prepare_sod_mode(struct mxt_data *data)
 
 	if (mxt_get_pw_status()) {
 		LOGE("Power supply is dropped, cannot change to sod mode\n");
+		return;
+	}
+
+	if (mxt_check_force_sleep(data)) {
+		LOGN("Flip cover closed force sleep\n");
 		return;
 	}
 
@@ -9390,6 +9405,10 @@ static int mxt_drm_resume(struct mxt_data *data)
 			LOGN("failed lock power\n");
 	}
 
+	if (data->watchdog.supported)
+		queue_delayed_work(data->mxt_drv_data->touch_wq, &data->watchdog.work,
+			msecs_to_jiffies(data->watchdog.delay));
+
 	if (mxt_power_block_get(data)) {
 		LOGN("still in use. Do nothing\n");
 		if (data->after_work && data->charge_out)
@@ -9410,10 +9429,6 @@ static int mxt_drm_resume(struct mxt_data *data)
 		data->work_deepsleep_enabled = false;
 		cancel_delayed_work_sync(&data->work_deepsleep);
 	}
-
-	if (data->watchdog.supported)
-		queue_delayed_work(data->mxt_drv_data->touch_wq, &data->watchdog.work,
-			msecs_to_jiffies(data->watchdog.delay));
 
 	data->pdata->panel_on = POWER_ON;
 	data->palm = false;

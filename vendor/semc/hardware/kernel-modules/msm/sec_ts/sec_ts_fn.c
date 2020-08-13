@@ -86,6 +86,7 @@ static void sidetouch_enable(void *device_data);
 static void stamina_enable(void *device_data);
 static void range_changer(void *device_data);
 static void orientation_change(void *device_data);
+static void doze_mode_change(void *device_data);
 static void not_support_cmd(void *device_data);
 
 static void sec_ts_print_frame(struct sec_ts_data *ts, short *min, short *max);
@@ -164,6 +165,7 @@ static struct sec_cmd sec_cmds[] = {
 	{SEC_CMD("stamina_enable", stamina_enable),},
 	{SEC_CMD("range_changer", range_changer),},
 	{SEC_CMD("orientation_change", orientation_change),},
+	{SEC_CMD("doze_mode_change", doze_mode_change),},
 	{SEC_CMD("not_support_cmd", not_support_cmd),},
 };
 
@@ -3994,8 +3996,10 @@ static void set_lowpower_mode(void *device_data)
 	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
 	char buff[SEC_CMD_STR_LEN] = { 0 };
 
+	mutex_lock(&ts->aod_mutex);
 	if (!ts->plat_data->aod_mode.supported) {
 		input_err(true, &ts->client->dev, "aod_mode is not supported.\n");
+		mutex_unlock(&ts->aod_mutex);
 		return;
 	}
 	sec_cmd_set_default_result(sec);
@@ -4009,8 +4013,15 @@ static void set_lowpower_mode(void *device_data)
 		sec->cmd_state = SEC_CMD_STATUS_OK;
 	}
 
-	if (sec_ts_get_pw_status() || !ts->after_work.done || (ts->power_status == SEC_TS_STATE_POWER_OFF)) {
+	if (sec_ts_get_pw_status() || !ts->after_work.done) {
 		input_info(true, &ts->client->dev, "%s: update skip\n", __func__);
+		goto update_skip;
+	} else if (ts->power_status == SEC_TS_STATE_POWER_OFF) {
+		ts->aod_pending = true;
+		ts->aod_pending_lowpower_mode = sec->cmd_param[0];
+		input_info(true, &ts->client->dev,
+			"Postponing lowpower_mode: %d\n",
+			ts->aod_pending_lowpower_mode);
 		goto update_skip;
 	}
 
@@ -4023,6 +4034,7 @@ update_skip:
 	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
 
 	sec_cmd_set_cmd_exit(sec);
+	mutex_unlock(&ts->aod_mutex);
 	return;
 
 }
@@ -4210,8 +4222,9 @@ static void touch_enable_irq(void *device_data)
 	int irq_judge;
 
 	sec_cmd_set_default_result(sec);
-	input_dbg(ts->debug_flag, &ts->client->dev, "IN the touch_enable_irq!!!!\n");
+
 	irq_judge = sec->cmd_param[0];
+	input_info(true, &ts->client->dev, "%s: change irq status to %d through sysfs\n", __func__, irq_judge);
 
 	if (!irq_judge) {
 		sec_ts_set_irq(ts, false);
@@ -5043,15 +5056,19 @@ static void range_changer(void *device_data)
 	extern int portrait_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM];
 	extern int landscape_buffer[SEC_TS_GRIP_REJECTION_BORDER_NUM];
 
-	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > 1) {
+	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > 2) {
 		input_err(true, &ts->client->dev, "%s: param out of range\n", __func__);
 		goto err_out;
 	}
 
-	if (!sec->cmd_param[0])
+	if (sec->cmd_param[0] == 0)
 		memcpy(portrait_buffer, sec->cmd_param + 1, sizeof(portrait_buffer));
-	else
+	else if (sec->cmd_param[0] == 1)
 		memcpy(landscape_buffer, sec->cmd_param + 1, sizeof(landscape_buffer));
+	else {
+		memcpy(portrait_buffer, ts->plat_data->portrait_buffer_default, sizeof(portrait_buffer));
+		memcpy(landscape_buffer, ts->plat_data->landscape_buffer_default, sizeof(landscape_buffer));
+	}
 
 	sec_cmd_set_default_result(sec);
 
@@ -5113,6 +5130,91 @@ static void orientation_change(void *device_data)
 	snprintf(buff, sizeof(buff), "%s", "OK");
 	sec->cmd_state = SEC_CMD_STATUS_OK;
 	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	return;
+
+err_out:
+	snprintf(buff, sizeof(buff), "%s", "NG");
+	sec->cmd_state = SEC_CMD_STATUS_FAIL;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+}
+
+static void doze_mode_change(void *device_data)
+{
+	struct sec_cmd_data *sec = (struct sec_cmd_data *)device_data;
+	struct sec_ts_data *ts = container_of(sec, struct sec_ts_data, sec);
+	char buff[SEC_CMD_STR_LEN] = { 0 };
+	u8 doze_mode_on = 0x01;
+	u8 doze_mode_off = 0x00;
+	u8 sidetouch_status;
+	u8 tRead;
+	int ret = 0;
+
+	sec_cmd_set_default_result(sec);
+
+	if (ts->power_status == SEC_TS_STATE_POWER_OFF) {
+		input_err(true, &ts->client->dev, "%s: POWER off!\n", __func__);
+		goto err_out;
+	}
+	if (sec->cmd_param[0] < 0 || sec->cmd_param[0] > 2) {
+		input_err(true, &ts->client->dev, "%s: param out of range\n", __func__);
+		goto err_out;
+	}
+
+	if (sec->cmd_param[0] == 0)
+		ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_ENABLE_DOZE, &doze_mode_on, 1);
+	else if (sec->cmd_param[0] == 2)
+		ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_ENABLE_DOZE, &doze_mode_off, 1);
+
+	if (ret < 0) {
+		input_err(true, &ts->client->dev, "%s: error sending doze command\n", __func__);
+		goto err_out;
+	}
+
+	if (sec->cmd_param[0] == 1) {
+		if (ts->side_enable != OFF) {
+			sidetouch_status = 0;
+			ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_ENABLE_SIDETOUCH, &sidetouch_status, 1);
+		}
+	} else if (sec->cmd_param[0] == 2) {
+		if (ts->side_enable != OFF) {
+			sidetouch_status = 0;
+			ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_ENABLE_SIDETOUCH, &sidetouch_status, 1);
+		}
+	} else {
+		if (ts->side_enable != OFF) {
+			sidetouch_status = (u8)ts->side_enable;
+			ret = ts->sec_ts_i2c_write(ts, SEC_TS_CMD_ENABLE_SIDETOUCH, &sidetouch_status, 1);
+		}
+	}
+
+	if (ret < 0) {
+		input_err(true, &ts->client->dev, "%s: error sending side touch command\n", __func__);
+		goto err_out;
+	}
+
+	ret = ts->sec_ts_i2c_read(ts, SEC_TS_CMD_ENABLE_DOZE, &tRead, 1);
+	if (ret < 0) {
+		input_err(true, &ts->client->dev, "%s: error read doze command\n", __func__);
+		goto err_out;
+	}
+
+	input_info(true, &ts->client->dev, "%s: Doze mode is now %d\n",
+			__func__, tRead);
+
+	ret = ts->sec_ts_i2c_read(ts, SEC_TS_CMD_ENABLE_SIDETOUCH, &tRead, 1);
+	if (ret < 0) {
+		input_err(true, &ts->client->dev, "%s: error read side touch command\n", __func__);
+		goto err_out;
+	}
+
+	input_info(true, &ts->client->dev, "%s: side touch mode is now %d\n",
+			__func__, tRead);
+
+
+	snprintf(buff, sizeof(buff), "%s", "OK");
+	sec->cmd_state = SEC_CMD_STATUS_OK;
+	sec_cmd_set_cmd_result(sec, buff, strnlen(buff, sizeof(buff)));
+	return;
 
 err_out:
 	snprintf(buff, sizeof(buff), "%s", "NG");

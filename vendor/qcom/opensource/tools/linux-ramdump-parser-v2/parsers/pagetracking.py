@@ -1,4 +1,4 @@
-# Copyright (c) 2012,2014-2015,2017-2018 The Linux Foundation. All rights reserved.
+# Copyright (c) 2012,2014-2015,2017-2019 The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -140,6 +140,8 @@ class PageTracking(RamParser):
                     handle = self.ramdump.read_structure_field(
                         temp_page_ext, 'struct page_ext', 'handle')
 
+                if handle is None:
+                    return -1, -1
                 slabindex = handle & 0x1fffff
                 handle_offset = (handle >> 0x15) & 0x3ff
                 handle_offset = handle_offset << 4
@@ -154,9 +156,9 @@ class PageTracking(RamParser):
                 struct_holding_trace_entries = stack
 
         if nr_trace_entries <= 0 or nr_trace_entries > 16:
-            return
+            return -1, -1
         if order >= self.max_order:
-            return
+            return -1, -1
 
         alloc_str = ''
         for i in range(0, nr_trace_entries):
@@ -199,6 +201,12 @@ class PageTracking(RamParser):
             print_out_str('CONFIG_PAGE_OWNER not defined')
             return
 
+        if self.ramdump.kernel_version >= (4, 4):
+            if not self.ramdump.is_config_defined('CONFIG_PAGE_OWNER_ENABLE_DEFAULT'):
+                print_out_str('CONFIG_PAGE_OWNER_ENABLE_DEFAULT not defined')
+                return
+
+        mem_section = None
         if (self.ramdump.kernel_version >= (3, 19, 0)):
             if self.ramdump.is_config_defined('CONFIG_SPARSEMEM'):
                 mem_section = self.ramdump.read_word('mem_section')
@@ -210,7 +218,7 @@ class PageTracking(RamParser):
         out_tracking = self.ramdump.open_file('page_tracking.txt')
         out_frequency = self.ramdump.open_file('page_frequency.txt')
         sorted_pages = {}
-        str = "PFN : 0x{0:x}-0x{1:x} Page : 0x{2:x}\n{3}\n"
+        str = "PFN : 0x{0:x}-0x{1:x} Page : 0x{2:x} Order : {3}\n{4}\n"
 
         if g_optimization is True:
             for pfn in range(start_pfn, end_pfn):
@@ -220,11 +228,13 @@ class PageTracking(RamParser):
                         page_count(self.ramdump, page) == 0):
                     continue
                 function_list, order = self.page_trace(pfn, mem_section)
+                if function_list == -1:
+                    continue
                 if order >= self.max_order:
                     out_tracking.write('PFN 0x{:x} page 0x{:x} skip as order '
                                        '0x{:x}\n'.format(pfn, page, order))
                 out_tracking.write(str.format(pfn, pfn + (1 << order) - 1,
-                                            page, function_list))
+                                            page, order, function_list))
                 if function_list in sorted_pages:
                     sorted_pages[function_list] = sorted_pages[function_list]\
                                                   + 1
@@ -239,12 +249,14 @@ class PageTracking(RamParser):
                         page_count(self.ramdump, page) == 0):
                     continue
                 function_list, order = self.page_trace(pfn, mem_section)
+                if function_list == -1:
+                    continue
                 if order >= self.max_order:
                     out_tracking.write('PFN 0x{:x} page 0x{:x} skip as order '
                                        '0x{:x}\n'.format(pfn, page, order))
 
                 out_tracking.write(str.format(pfn, pfn + (1 << order) - 1,
-                                page, function_list))
+                                page, order, function_list))
 
                 if function_list in sorted_pages:
                     sorted_pages[function_list] = sorted_pages[function_list]\

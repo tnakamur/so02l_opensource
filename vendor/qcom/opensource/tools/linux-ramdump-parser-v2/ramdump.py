@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+# Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -543,6 +543,7 @@ class RamDump():
         self.autodump = options.autodump
         self.module_table = module_table.module_table_class()
         self.module_table.setup_sym_path(options.sym_path)
+        self.currentEL = options.currentEL or None
         if self.minidump:
             try:
                 mod = import_module('elftools.elf.elffile')
@@ -627,11 +628,14 @@ class RamDump():
             modules_vsize
         self.kimage_vaddr = self.kimage_vaddr + self.get_kaslr_offset()
         self.modules_end = self.page_offset
-        self.kimage_voffset = self.address_of("kimage_voffset")
-        if self.kimage_voffset is not None:
-            self.kimage_voffset = self.kimage_vaddr - self.phys_offset
-            self.modules_end = self.kimage_vaddr
-            print_out_str("The kimage_voffset extracted is: {:x}".format(self.kimage_voffset))
+        if self.arm64:
+            self.kimage_voffset = self.address_of("kimage_voffset")
+            if self.kimage_voffset is not None:
+                self.kimage_voffset = self.kimage_vaddr - self.phys_offset
+                self.modules_end = self.kimage_vaddr
+                print_out_str("The kimage_voffset extracted is: {:x}".format(self.kimage_voffset))
+        else:
+            self.kimage_voffset = None
 
         # The address of swapper_pg_dir can be used to determine
         # whether or not we're running with LPAE enabled since an
@@ -1223,7 +1227,7 @@ class RamDump():
         if board.wdog_addr is not None:
             print_out_str(
             'TZ address: {0:x}'.format(board.wdog_addr))
-        if self.phys_offset is None:
+        if board.phys_offset is not None:
             self.phys_offset = board.phys_offset
         self.tz_addr = board.wdog_addr
         self.ebi_start = board.ram_start
@@ -1259,12 +1263,32 @@ class RamDump():
         symbols = stream.readlines()
         kaslr = self.get_kaslr_offset()
 
+        # The beginning and ending of kernel image, from vmlinux.lds.S
+        _text = self.address_of('_text')
+        if _text is None:
+            _text = 0
+
+        _end = self.address_of('_end')
+        if _end is None:
+            _end = 0xFFFFFFFFFFFFFFFF
+
         for line in symbols:
             s = line.split(' ')
-            if len(s) == 3:
-                self.lookup_table.append((int(s[0], 16) + kaslr,
-                                         s[2].rstrip()))
+            if len(s) != 3:
+                continue
+
+            entry = (int(s[0], 16) + kaslr, s[2].rstrip())
+
+            # The symbol file contains many artificial symbols which we don't care about.
+            if entry[0] < _text or entry[0] >= _end:
+                continue
+
+            self.lookup_table.append(entry)
         stream.close()
+
+        if not len(self.lookup_table):
+            print_out_str('!!! Unable to retrieve symbols... Exiting')
+            sys.exit(1)
 
     def retrieve_modules(self):
         mod_list = self.address_of('modules')
@@ -1394,36 +1418,49 @@ class RamDump():
             pass
 
     def unwind_lookup(self, addr, symbol_size=0):
-        if (addr is None):
-            return ('(Invalid address)', 0x0)
+        """
+        Returns closest symbols <= addr and either the relative offset
+        or the symbol size.
 
+        The loop constant is:
+        table[low] <= addr <= table[high]
+        """
+
+        table = self.lookup_table
         low = 0
-        high = len(self.lookup_table)
-        # Python now complains about division producing floats
-        mid = (low + high) >> 1
-        premid = 0
+        high = len(self.lookup_table) - 1
 
-        while(not(addr >= self.lookup_table[mid][0] and addr < self.lookup_table[mid + 1][0])):
+        if addr is None or addr < table[low][0] or addr > table[high][0]:
+            return None
 
-            if(addr < self.lookup_table[mid][0]):
-                high = mid - 1
-
-            if(addr > self.lookup_table[mid][0]):
-                low = mid + 1
-
+        while(True):
+            # Python now complains about division producing floats
             mid = (high + low) >> 1
 
-            if(mid == premid):
-                return None
-            if (mid + 1) >= len(self.lookup_table) or mid < 0:
-                return None
+            if mid == low or mid == high:
+                break
 
-            premid = mid
+            if addr <= table[mid][0]:
+                high = mid
+            elif addr >= table[mid][0]:
+                low = mid
+
+        if addr == table[low][0]:
+            high = low
+        elif addr == table[high][0]:
+            low = high
+
+        offset = addr - table[low][0]
+        #how to calculate size for the last symbol?
+        if low == len(self.lookup_table) - 1:
+            size = 0
+        else:
+            size = table[low + 1][0] - table[low][0]
 
         if symbol_size == 0:
-            return (self.lookup_table[mid][1], addr - self.lookup_table[mid][0])
+            return (table[low][1], offset)
         else:
-            return (self.lookup_table[mid][1], self.lookup_table[mid + 1][0] - self.lookup_table[mid][0])
+            return (table[low][1], size)
 
     def read_physical(self, addr, length):
         if self.minidump:
@@ -1522,6 +1559,8 @@ class RamDump():
             return None
 
         addr += self.field_offset(struct_name, field)
+        if size == 2:
+            return self.read_u16(addr, virtual)
         if size == 4:
             return self.read_u32(addr, virtual)
         if size == 8:

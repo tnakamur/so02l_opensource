@@ -1,4 +1,4 @@
-# Copyright (c) 2014-2015, 2017, The Linux Foundation. All rights reserved.
+# Copyright (c) 2014-2015, 2017, 2019, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -105,6 +105,7 @@ class DDRCompare(RamParser) :
         thread_group_pointer = thread_group_pointer - thread_group_offset_index
 
         next = thread_group_pointer;
+        seen_thread = []
         if(thread_group_pointer != address):
             self.output_file.write("-----------------------------------\n")
             self.output_file.write("Threads of 0x{0:x}\n".format(address))
@@ -121,11 +122,15 @@ class DDRCompare(RamParser) :
                     return -1
                 comm_offset = task_struct + comm_offset_index
                 comm = self.ramdump.read_cstring(comm_offset, 16, True)
-                self.output_file.write("Next = {0} ({1})\n".format(hex(task_struct).rstrip("L"), comm))
                 if (self.validate_task_struct(task_struct) == -1):
                     return -1
                 if (self.validate_sched_class(task_struct) == -1):
                     return -1
+                if task_struct in seen_thread:
+                    self.output_file.write("!!!! Cycle in thread group! The list is corrupt!\n")
+                    break
+                self.output_file.write("Next = {0} ({1})\n".format(hex(task_struct).rstrip("L"), comm))
+                seen_thread.append(task_struct)
                 next = task_struct;
                 if (next == thread_group_pointer):
                     break
@@ -143,7 +148,7 @@ class DDRCompare(RamParser) :
         self.output_file.write("Task Offset {0}\n".format(hex(tasks_offset).rstrip("L")))
         comm_offset = self.ramdump.field_offset('struct task_struct', 'comm')
         self.output_file.write("Comm Offset {0}\n\n".format(hex(comm_offset).rstrip("L")))
-
+        seen_task = []
         next = init_task;
         found_corruption = 0
 
@@ -155,7 +160,6 @@ class DDRCompare(RamParser) :
 
             task_struct = tasks_pointer - tasks_offset
             comm = self.ramdump.read_cstring(task_struct + comm_offset, 16, True)
-            self.output_file.write("Next = {0} ({1})\n".format(hex(task_struct).rstrip("L"), comm))
             if (self.validate_task_struct(task_struct) == -1):
                 found_corruption = 1
                 break
@@ -165,7 +169,11 @@ class DDRCompare(RamParser) :
             if (self.check_thread_group(task_struct, comm_offset) == -1):
                 found_corruption = 1
                 break
-
+            if task_struct in seen_task:
+                self.output_file.write("!!!! Cycle in task group! The list is corrupt!\n")
+                break
+            self.output_file.write("Next = {0} ({1})\n".format(hex(task_struct).rstrip("L"), comm))
+            seen_task.append(task_struct)
             next = task_struct;
             if (next == init_task):
                 break

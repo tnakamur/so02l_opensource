@@ -1,4 +1,4 @@
-# Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+# Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 and
@@ -23,12 +23,16 @@ class TimerList(RamParser) :
         self.output = []
         major, minor, patch = self.ramdump.kernel_version
         self.timer_42 = False
+        self.timer_has_data = True
         self.timer_jiffies = 'timer_jiffies'
         self.tvec_base = 'struct tvec_base'
         self.tvec_bases = 'tvec_bases'
         self.next_timer = 'next_timer'
         self.global_deferrable = 'tvec_base_deferrable'
 
+        # As of kernel 4.15, timer list structure no longer has data field
+        if (major, minor) >= (4, 15):
+            self.timer_has_data = False
         if (major, minor) >= (4, 9):
             self.vectors = {'vectors': 512}
             self.timer_jiffies = 'clk'
@@ -49,18 +53,21 @@ class TimerList(RamParser) :
         remarks = ''
         function_addr = node + self.ramdump.field_offset('struct timer_list', 'function')
         expires_addr = node + self.ramdump.field_offset('struct timer_list', 'expires')
-        data_addr = node + self.ramdump.field_offset('struct timer_list', 'data')
         try:
             function =  self.ramdump.unwind_lookup(self.ramdump.read_word(function_addr))[0]
         except TypeError:
             function = "<dynamic module>"
         expires = self.ramdump.read_word(expires_addr)
-        try:
-            data = hex(self.ramdump.read_word(data_addr)).rstrip('L')
-        except TypeError:
-            self.output_file.write("+ Corruption detected at index {0} in {1} list, found corrupted value: {2:x}\n".format(index, type, data_addr))
-            return
 
+        if self.timer_has_data:
+            data_addr = node + self.ramdump.field_offset('struct timer_list', 'data')
+            try:
+                data = hex(self.ramdump.read_word(data_addr)).rstrip('L')
+            except TypeError:
+                self.output_file.write("+ Corruption detected at index {0} in {1} list, found corrupted value: {2:x}\n".format(index, type, data_addr))
+                return
+        else:
+           data = ""
 
         if function == "delayed_work_timer_fn":
             timer_list_offset = self.ramdump.field_offset('struct delayed_work', 'timer')
@@ -68,9 +75,15 @@ class TimerList(RamParser) :
             func_addr = work_addr + self.ramdump.field_offset('struct work_struct', 'func')
             try:
                 work_func = self.ramdump.unwind_lookup(self.ramdump.read_word(func_addr))[0]
-                data += " / " + work_func
+                if self.timer_has_data:
+                    data += " / " + work_func
+                else:
+                    data = work_func
             except TypeError:
-                data += " / " + hex(self.ramdump.read_word(func_addr)) + "<MODULE>"
+                if self.timer_has_data:
+                    data += " / " + hex(self.ramdump.read_word(func_addr)) + "<MODULE>"
+                else:
+                    data = hex(self.ramdump.read_word(func_addr)) + "<MODULE>"
 
         if not self.timer_42:
             timer_base_addr = node + self.ramdump.field_offset(
@@ -105,9 +118,12 @@ class TimerList(RamParser) :
                                    base)
 
     def print_vec(self, type):
+        headers = ['INDEX', 'TIMER_LIST_ADDR', 'EXPIRES', 'FUNCTION', 'DATA/WORK', 'REMARKS']
+        if not self.timer_has_data:
+            headers[4] = 'WORK'
         if len(self.output):
             self.output_file.write("+ {0} Timers ({1})\n\n".format(type, len(self.output)))
-            self.output_file.write("\t{0:6} {1:18} {2:14} {3:40} {4:52} {5}\n".format('INDEX', 'TIMER_LIST ADDR', 'EXPIRES', 'FUNCTION', 'DATA / WORK', 'REMARKS'))
+            self.output_file.write("\t{0:6} {1:18} {2:14} {3:40} {4:52} {5}\n".format(headers[0], headers[1], headers[2], headers[3], headers[4], headers[5]))
             for out in self.output:
                 self.output_file.write(out)
             self.output_file.write("\n")

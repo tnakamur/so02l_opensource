@@ -40,12 +40,14 @@ class RunQueues(RamParser):
     def print_task_state(self, status, task_addr):
         pid_offset = self.ramdump.field_offset('struct task_struct', 'pid')
         comm_offset = self.ramdump.field_offset('struct task_struct', 'comm')
+        affinity_offset = self.ramdump.field_offset('struct task_struct', 'cpus_allowed')
 
         if 0 < task_addr:
             pid = self.ramdump.read_int(task_addr + pid_offset)
             taskname = self.ramdump.read_cstring(task_addr + comm_offset, 16)
+            affinity = self.ramdump.read_u64(task_addr + affinity_offset)
             self.print_out_str_with_tab(
-                '{0}: {1}({2})'.format(status, taskname, pid))
+                '{0}: {1}({2}) [affinity={3:x}]'.format(status, taskname, pid, affinity))
         else:
             self.print_out_str_with_tab('{0}: None(0)'.format(status))
 

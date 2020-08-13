@@ -1131,7 +1131,7 @@ struct mxt_data {
 	int x_zitter;
 	int y_zitter;
 
-	u8 pm_state;
+	atomic_t pm_state;
 	u8 pen_support;
 
 	int self_cap;
@@ -1152,6 +1152,7 @@ struct mxt_data {
 	bool charge_out;
 	bool wireless_charge;
 	bool landscape;
+	bool forcesleep;
 
 	u8 register_value;
 

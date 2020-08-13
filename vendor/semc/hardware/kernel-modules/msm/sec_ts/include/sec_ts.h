@@ -165,6 +165,7 @@
 #define SEC_TS_CMD_SET_DOZE_TIMEOUT		0x40
 #define SEC_TS_CMD_ENABLE_STAMINAMODE		0x41
 #define SEC_TS_CMD_ENABLE_SIDETOUCH		0x42
+#define SEC_TS_CMD_ENABLE_DOZE			0x44
 #define SEC_TS_CMD_ERASE_FLASH			0x45
 #define SEC_TS_READ_ID				0x52
 #define SEC_TS_READ_BOOT_STATUS			0x55
@@ -764,6 +765,7 @@ struct sec_ts_data {
 	struct mutex i2c_mutex;
 	struct mutex eventlock;
 	struct mutex modechange;
+	struct mutex irq_mutex;
 
 #ifdef USE_SELF_TEST_WORK
 	struct delayed_work work_read_info;
@@ -862,11 +864,28 @@ struct sec_ts_data {
 	bool landscape;
 	bool report_flag[MAX_SUPPORT_TOUCH_COUNT + MAX_SUPPORT_HOVER_COUNT];
 
+	u16 saved_data_x[10];
+	u16 saved_data_y[10];
+
 	int (*sec_ts_i2c_write)(struct sec_ts_data *ts, u8 reg, u8 *data, int len);
 	int (*sec_ts_i2c_read)(struct sec_ts_data *ts, u8 reg, u8 *data, int len);
 	int (*sec_ts_i2c_write_burst)(struct sec_ts_data *ts, u8 *data, int len);
 	int (*sec_ts_i2c_read_bulk)(struct sec_ts_data *ts, u8 *data, int len);
 	int (*sec_ts_read_customlib)(struct sec_ts_data *ts, u8 *data, int len);
+
+	/*
+	 * "aod_mutex" provides atomicity of changes in:
+	 * - power_status
+	 * - aod_pending
+	 * - aod_pending_lowpower_mode
+	 * specifically to solve a race between the following
+	 * top-level driver functions:
+	 * - drm_notifier_callback()
+	 * - set_lowpower_mode()
+	 */
+	struct mutex aod_mutex;
+	bool aod_pending;
+	u8 aod_pending_lowpower_mode;
 };
 
 struct sec_ts_plat_data {
@@ -893,6 +912,9 @@ struct sec_ts_plat_data {
 	u8 config_version_of_bin[4];
 	u8 img_version_of_ic[4];
 	u8 img_version_of_bin[4];
+
+	u32 portrait_buffer_default[SEC_TS_GRIP_REJECTION_BORDER_NUM];
+	u32 landscape_buffer_default[SEC_TS_GRIP_REJECTION_BORDER_NUM];
 
 	struct pinctrl *pinctrl;
 

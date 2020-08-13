@@ -10,6 +10,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/atomic.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
 #include <linux/module.h>
@@ -1011,7 +1012,7 @@ struct clearpad_t {
 	struct clearpad_reg_offset_t reg_offset;
 	struct clearpad_charger_only_t charger_only;
 	int irq;
-	bool irq_enabled;
+	atomic_t irq_enabled;
 	enum clearpad_force_sleep_e force_sleep;
 #if defined (CONFIG_FB) \
 &&         !defined(CONFIG_DRM_SDE_SPECIFIC_PANEL)
@@ -1122,20 +1123,28 @@ static inline bool clearpad_is_valid_function(struct clearpad_t *this, int func)
 		&& (this->pdt[func].number == clearpad_function_value[func]);
 }
 
+static bool is_irq_enabled(struct clearpad_t *this)
+{
+	return atomic_read(&this->irq_enabled) == 1;
+}
+
 /* need LOCK(&this->lock) */
 static void clearpad_set_irq(struct clearpad_t *this, bool enable)
 {
-	if (enable && !this->irq_enabled) {
+	int rc = atomic_cmpxchg(&this->irq_enabled, !enable, enable);
+
+	if (rc == enable) {
+		dev_err(&this->pdev->dev, "%s: unbalanced, tried to set %d\n",
+				__func__, enable);
+		return;
+	}
+	if (enable) {
 		enable_irq(this->irq);
 		LOGI(this, "irq was enabled\n");
-	} else if (!enable && this->irq_enabled) {
+	} else {
 		disable_irq_nosync(this->irq);
 		LOGI(this, "irq was disabled\n");
-	} else {
-		LOGI(this, "no irq change (%s)\n",
-		     this->irq_enabled ? "enable" : "disable");
 	}
-	this->irq_enabled = enable;
 }
 
 static int clearpad_set_noise_det_irq(struct clearpad_t *this, bool enable,
@@ -4085,7 +4094,7 @@ static int clearpad_set_resume_mode(struct clearpad_t *this)
 	else
 		LOGI(this, "noise_det irq was enabled\n");
 
-	if (!this->irq_enabled) {
+	if (!is_irq_enabled(this)) {
 		/* F01_RMI_DATA01: Interrupt Status */
 		rc = clearpad_get(SYNF(this, F01_RMI, DATA,
 			this->reg_offset.f01_data01), &interrupt);
@@ -6770,7 +6779,7 @@ static struct device_attribute clearpad_sysfs_attrs[] = {
 	__ATTR(cover_status, S_IRUGO | S_IWUSR,
 				clearpad_state_show,
 				clearpad_cover_status_store),
-	__ATTR(cover_mode_enabled, S_IRUGO | S_IWUSR,
+	__ATTR(cover_mode, S_IRUGO | S_IWUSR,
 				clearpad_state_show,
 				clearpad_cover_mode_enabled_store),
 	__ATTR(cover_win_top, S_IRUGO | S_IWUSR,
@@ -7336,6 +7345,8 @@ static int clearpad_input_init(struct clearpad_t *this)
 
 	set_bit(ABS_MT_TRACKING_ID, this->input->absbit);
 	set_bit(ABS_MT_TOOL_TYPE, this->input->absbit);
+
+	set_bit(INPUT_PROP_DIRECT, this->input->propbit);
 
 	LOGI(this, "touch area [%d, %d, %d, %d]\n",
 	     this->extents.x_min, this->extents.y_min,
@@ -8725,7 +8736,7 @@ static void clearpad_debug_info(struct clearpad_t *this)
 	       NAME_OF(clearpad_state_name, this->state),
 	       this->dev_active ? "true" : "false",
 	       NAME_OF(clearpad_chip_name, this->chip_id),
-	       this->irq_enabled ? "enabled" : "disabled",
+	       is_irq_enabled(this) ? "enabled" : "disabled",
 	       this->interrupt.count);
 
 	/* clearpad_lockdown_area_t */
@@ -9089,6 +9100,7 @@ static int clearpad_probe(struct platform_device *pdev)
 		goto err_in_request_threaded_irq;
 	}
 	disable_irq_nosync(this->irq);
+	atomic_set(&this->irq_enabled, 0);
 
 	if (this->noise_det.supported) {
 		this->noise_det.irq = gpio_to_irq(this->noise_det.irq_gpio);
